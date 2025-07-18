@@ -1,0 +1,49 @@
+version: '3'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    volumes:
+      - php_socket:/var/run/php
+    environment:
+      - TRUSTED_PROXIES=127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+      - TRUSTED_HOSTS=^(localhost|app)$$
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-!ChangeMe!}@database:5432/${POSTGRES_DB:-app}?serverVersion=${POSTGRES_VERSION:-15}
+    depends_on:
+      - database
+
+  database:
+    image: postgres:${POSTGRES_VERSION:-15}-alpine
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-app}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-!ChangeMe!}
+      - POSTGRES_USER=${POSTGRES_USER:-app}
+    volumes:
+      - database_data:/var/lib/postgresql/data:rw
+    ports:
+      - "5432:5432"
+
+  caddy:
+    image: ${CADDY_IMAGE:-caddy:2-alpine}
+    depends_on:
+      - app
+    environment:
+      - SERVER_NAME=${SERVER_NAME:-localhost, caddy:80}
+    restart: unless-stopped
+    volumes:
+      - php_socket:/var/run/php
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "9990:80"
+      - "9443:443"
+      - "9443:443/udp"
+
+volumes:
+  php_socket:
+  caddy_data:
+  caddy_config:
+  database_data:
