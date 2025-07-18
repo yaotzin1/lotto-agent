@@ -1,0 +1,14 @@
+version: '3'
+
+services:
+  app:
+    environment:
+      - APP_ENV=dev
+      - XDEBUG_MODE=off
+    volumes:
+      - ./:/app
+
+  caddy:
+    volumes:
+      - ./public:/app/public:ro
+      - ./:/app
