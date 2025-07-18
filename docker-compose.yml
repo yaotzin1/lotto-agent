@@ -8,6 +8,7 @@ services:
     restart: unless-stopped
     volumes:
       - php_socket:/var/run/php
+      - ./frankenphp.Caddyfile:/etc/frankenphp/Caddyfile
     environment:
       - TRUSTED_PROXIES=127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
       - TRUSTED_HOSTS=^(localhost|app)$$
@@ -41,6 +42,7 @@ services:
       - "9990:80"
       - "9443:443"
       - "9443:443/udp"
+
 
 volumes:
   php_socket:

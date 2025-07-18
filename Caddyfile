@@ -1,0 +1,25 @@
+{
+    # Global options
+    admin off
+    auto_https off
+}
+
+:80 {
+    # Set the root directory for the server
+    root * /app/public
+
+    # Enable PHP processing via FrankenPHP
+    php_server
+
+    # Try to serve static files first, then fall back to index.php
+    try_files {path} /index.php?{query}
+
+    # Enable file browsing
+    file_server
+
+    # Enable logging
+    log {
+        output stdout
+        format console
+    }
+}
