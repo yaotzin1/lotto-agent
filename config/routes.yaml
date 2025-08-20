@@ -1,3 +1,0 @@
-controllers:
-    resource: ../config/routes/annotations.yaml
-    type: yaml
