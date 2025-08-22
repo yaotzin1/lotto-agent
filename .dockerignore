@@ -1,0 +1,28 @@
+# Exclude large and unnecessary files from Docker build context
+# Primary fix: prevent sending node_modules (and its .bin symlinks) into context
+node_modules
+
+# Frontend build artifacts
+public/build
+
+# VCS and IDE
+.git
+.gitignore
+.idea
+.vscode
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# PHP/Symfony cache and logs
+var/
+
+# Composer artifacts in host (image installs its own during build)
+vendor
+composer.lock
+
+# NPM/Yarn logs and locks (optional to keep context minimal)
+npm-debug.log*
+yarn-error.log
+pnpm-lock.yaml
