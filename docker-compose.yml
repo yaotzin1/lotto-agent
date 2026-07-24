@@ -1,23 +1,13 @@
-version: '3.8'
-
 services:
+  # Główny serwis naszego agenta
   app:
-    build:
+    build: 
       context: .
-      dockerfile: Dockerfile
-    ports:
-      - "8080:80"
+      target: dev # Możemy zdefiniować etap deweloperski w Dockerfile
     volumes:
-      - ./:/app
-    environment:
-      APP_ENV: dev
-      APP_DEBUG: 1
-    depends_on:
-      - node
-
-  node:
-    image: node:20-alpine
+      - .:/app
+      - /app/var 
+    env_file:
+      - .env.dev
+    tty: true # Pozwala na interakcję z terminalem
     working_dir: /app
-    volumes:
-      - ./:/app
-    command: sh -c "npm install && npm run dev"

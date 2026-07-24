@@ -1,47 +1,56 @@
-# Lotto Simulator (Symfony + FrankenPHP + Encore + React TS + MUI)
+# Lotto Agent
 
-This repository contains a minimal Symfony 7 application packaged for Docker using FrankenPHP, with Webpack Encore bundling a React + TypeScript + Material-UI frontend. It implements two core features from the provided PHP scripts:
+A Symfony 7 CLI application containerized with Docker, designed as an AI lotto agent utilizing Gemini models.
 
-- Generator (v4.3) — implemented as a Symfony console command: `bin/console app:generate`
-- Verifier (v2.1) — implemented as a Symfony console command: `bin/console app:verify <file> <numbers...>`
+## Requirements
+- Docker
+- Docker Compose
 
-## Prerequisites
-- Docker and Docker Compose
+## Setup and Installation
 
-## Run (development)
+1. **Environment Setup:**
+   Ensure your `.env.dev` or `.env` files are configured with the required API keys (e.g., Gemini API keys).
+   ```bash
+   cp .env.dev .env
+   ```
 
+2. **Build the Docker Container:**
+   ```bash
+   docker-compose build
+   ```
+
+3. **Install Dependencies (Composer):**
+   ```bash
+   docker-compose run --rm app composer install
+   ```
+
+## Usage
+
+You can interact with the application via the Symfony Console inside the Docker container.
+
+To list all available commands:
 ```bash
-docker-compose up --build
+docker-compose run --rm app php bin/console list
 ```
 
-This starts:
-- app: FrankenPHP serving Symfony at http://localhost:8080
-- node: Node 20 watcher running Encore dev build
+### Running the Commands
 
-Open http://localhost:8080 — the React page is minimal and loads via Encore.
-
-## Commands
-
-Inside the container (app service):
-
+Run the main agent command. You will be prompted interactively to choose a game and specify the number of numbers to analyze if you do not provide them as options:
 ```bash
-docker compose exec app bash
-composer install
-php bin/console app:generate
-php bin/console app:verify system_Mini_Lotto_12_liczb_YYYY-MM-DD.txt 5 12 18 23 40
+docker-compose run --rm app php bin/console app:lotto-agent
 ```
 
-Notes:
-- The generator mirrors the original script logic, including Multi Multi fallback and optional filters.
-- The verifier detects game type from file names (including DOWOLNY_XzY) and computes hits, plus handling, and ROI prompts.
+You can also pass them directly as options:
+```bash
+docker-compose run --rm app php bin/console app:lotto-agent --game=EuroJackpot --pick=5 --bets=8 --months=12 --neighbours
+```
 
-## Frontend
-- React + TypeScript + MUI scaffolded in `assets/` and built to `public/build/` via Encore.
-- Adjust or extend the UI to call backend endpoints if needed (currently minimal page).
+To run the advanced mathematical generator:
+```bash
+docker-compose run --rm app php bin/console app:lotto-generator
+```
 
-## Configuration
-- PHP GMP extension is installed in the FrankenPHP image (required for binomial computations).
-- Twig and Webpack Encore bundles are enabled.
-
-## License
-MIT
+## Project Architecture
+- **PHP 8.2 CLI (Alpine)** - Base image for the application.
+- **Symfony 7.4.x** - Underlying framework handling the console application and dependency injection.
+- `src/Command/` - Contains the custom commands (`LottoAgentCommand`, `GeminiModelsCommand`, `LottoCommand`).
