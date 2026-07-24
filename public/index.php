@@ -1,25 +1,9 @@
 <?php
 
 use App\Kernel;
-use Symfony\Component\Dotenv\Dotenv;
-use Symfony\Component\ErrorHandler\Debug;
-use Symfony\Component\HttpFoundation\Request;
 
-require dirname(__DIR__).'/vendor/autoload.php';
+require_once dirname(__DIR__).'/vendor/autoload_runtime.php';
 
-if (!isset($_SERVER['APP_ENV'])) {
-    if (class_exists(Dotenv::class) && file_exists(dirname(__DIR__).'/.env')) {
-        (new Dotenv())->bootEnv(dirname(__DIR__).'/.env');
-    }
-}
-
-if ($_SERVER['APP_DEBUG'] ?? false) {
-    umask(0000);
-    Debug::enable();
-}
-
-$kernel = new Kernel($_SERVER['APP_ENV'] ?? 'prod', (bool)($_SERVER['APP_DEBUG'] ?? false));
-$request = Request::createFromGlobals();
-$response = $kernel->handle($request);
-$response->send();
-$kernel->terminate($request, $response);
+return static function (array $context) {
+    return new Kernel($context['APP_ENV'], (bool) $context['APP_DEBUG']);
+};
