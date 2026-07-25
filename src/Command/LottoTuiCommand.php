@@ -8,6 +8,7 @@ use App\Service\BetGeneratorService;
 use App\Service\GameRegistryService;
 use App\Service\GeminiApiClient;
 use App\Service\LottoApiClient;
+use App\Service\ReActAgentService;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
@@ -33,10 +34,12 @@ class LottoTuiCommand extends Command
         private readonly GeminiApiClient $geminiApiClient,
         private readonly GameRegistryService $gameRegistryService,
         private readonly BetGeneratorService $generatorService,
+        private readonly ReActAgentService $reactAgentService,
         private readonly LoggerInterface $logger
     ) {
         parent::__construct();
     }
+
 
     protected function configure(): void
     {
@@ -148,19 +151,38 @@ class LottoTuiCommand extends Command
         $fullPool = [];
 
         if ($poolMode === 'AI') {
-            $sessions = $input->getOption('sessions') ?: $this->promptInput('Z ilu ostatnich losowań pobrać statystyki (np. 50)?', '50');
             $poolSize = (int)$this->promptInput("Ile liczb ma wybrać AI? (dla gry {$gameType} losujemy {$game['pick']} z {$game['from']})", '20');
 
-            $io->text("Pobieranie statystyk z ostatnich $sessions losowań...");
-            $statsData = $this->lottoApiClient->fetchStatisticsForSessions($gameType, (int)$sessions);
+            $io->text("Uruchamianie ReAct Agent AI (Gemini + Narzędzia Statystyczne OpenAPI)...");
 
-            $contextLimit = in_array($gameType, ['MultiMulti', 'Keno'], true) ? 20 : 10;
-            $statsSummary = $this->lottoApiClient->getHotAndColdNumbers($statsData, $contextLimit);
+            $onStepCallback = function (string $type, array $data) use ($io): void {
+                if ($type === 'tool_call') {
+                    $io->text(sprintf(
+                        "🤖 <fg=cyan>[Agent Thought/Action]</fg=cyan> Uruchamiam narzędzie <fg=yellow>%s</fg=yellow> z parametrami: %s",
+                        $data['tool'],
+                        json_encode($data['args'])
+                    ));
+                } elseif ($type === 'tool_result') {
+                    $io->text(sprintf(
+                        "📊 <fg=magenta>[Observation]</fg=magenta> Otrzymano wynik z narzędzia %s.",
+                        $data['tool']
+                    ));
+                } elseif ($type === 'thinking') {
+                    $io->text(sprintf(
+                        "🧠 <fg=gray>[Agent Thinking]</fg=gray> Tura %d: Gemini przetwarza obserwacje...",
+                        $data['turn']
+                    ));
+                }
+            };
 
-            $io->text("Pytanie AI (Gemini) o $poolSize liczb (strategia: $aiStrategy)...");
-            $fullPool = $this->geminiApiClient->askForPool($gameType, $statsSummary['hotStr'], $statsSummary['coldStr'], $poolSize, $aiStrategy);
+            $result = $this->reactAgentService->runAgentLoop($gameType, $poolSize, $onStepCallback);
+            $fullPool = $result['pool'] ?? $result['selected_pool'] ?? [];
             sort($fullPool);
-            $io->success("Pula AI: " . implode(', ', $fullPool));
+
+            if (!empty($result['reasoning'])) {
+                $io->text("<comment>Uzasadnienie ReAct Agent:</comment> " . $result['reasoning']);
+            }
+            $io->success("Pula AI (" . count($fullPool) . " liczb): " . implode(', ', $fullPool));
         } else {
             $poolStr = $this->promptInput('Podaj pulę liczb oddzielonych spacją lub przecinkiem (np. 1 5 12 18):');
             preg_match_all('/\d+/', $poolStr, $matches);

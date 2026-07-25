@@ -175,6 +175,7 @@ POSTĘPOWANIE (PROCEDURA REACT):
 
         return [
             'pool' => $finalPool,
+            'selected_pool' => $finalPool,
             'reasoning' => $finalReasoning,
             'steps' => $steps,
         ];
