@@ -46,6 +46,10 @@ class LottoTuiCommand extends Command
         $this->addOption('game', 'g', InputOption::VALUE_REQUIRED, 'Typ gry do analizy');
         $this->addOption('sessions', 's', InputOption::VALUE_REQUIRED, 'Ilość ostatnich losowań do pobrania statystyk');
         $this->addOption('bets', 'b', InputOption::VALUE_REQUIRED, 'Ile zakładów ma wygenerować system?');
+        $this->addOption('strategy', 'st', InputOption::VALUE_REQUIRED, 'Strategia doboru liczb przez AI (balanced/aggressive)');
+        $this->addOption('pool-size', 'p', InputOption::VALUE_REQUIRED, 'Rozmiar puli liczb wybieranych przez AI');
+        $this->addOption('pool-mode', 'pm', InputOption::VALUE_REQUIRED, 'Metoda doboru puli (AI/Manual)');
+        $this->addOption('mode', 'm', InputOption::VALUE_REQUIRED, 'Tryb pracy generatora (1-6)');
     }
 
     private function promptSelect(string $question, array $choices, ?string $default = null): string
@@ -131,27 +135,47 @@ class LottoTuiCommand extends Command
         $game = $this->gameRegistryService->getGameConfig($gameType);
 
         if ($gameType === 'MultiMulti') {
-            $pickSize = (int)$this->promptSelect('Ile liczb chcesz skreślać na jednym zakładzie (strategia Multi Multi)?', ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'], '10');
+            $poolSizeOpt = $input->getOption('pool-size');
+            if ($poolSizeOpt && is_numeric($poolSizeOpt) && (int)$poolSizeOpt >= 1 && (int)$poolSizeOpt <= 10) {
+                $pickSize = (int)$poolSizeOpt;
+            } else {
+                $pickSize = (int)$this->promptSelect('Ile liczb chcesz skreślać na jednym zakładzie (strategia Multi Multi)?', ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'], '10');
+            }
             $game['pick'] = $pickSize;
         }
 
-        $poolMode = $this->promptSelect('Jak chcesz wygenerować pulę wejściową liczb?', [
-            'AI' => 'AI (Na podstawie statystyk LOTTO API)',
-            'Manual' => 'Ręcznie (Wpisz własne liczby)',
-        ], 'AI');
+        $poolModeOpt = $input->getOption('pool-mode');
+        if ($poolModeOpt && in_array(strtolower($poolModeOpt), ['ai', 'manual'], true)) {
+            $poolMode = strtolower($poolModeOpt) === 'ai' ? 'AI' : 'Manual';
+        } else {
+            $poolMode = $this->promptSelect('Jak chcesz wygenerować pulę wejściową liczb?', [
+                'AI' => 'AI (Na podstawie statystyk LOTTO API)',
+                'Manual' => 'Ręcznie (Wpisz własne liczby)',
+            ], 'AI');
+        }
 
-        $aiStrategy = 'balanced';
-        if ($poolMode === 'AI') {
-            $aiStrategy = $this->promptSelect('Wybierz strategię doboru liczb przez AI:', [
-                'balanced' => 'Zbalansowana (Klasyczna Hybryda, równowaga)',
-                'aggressive' => 'Ostra Gra (Łowca Trendów - maks. ryzyko na klastry i liczby gorące)',
-            ], 'aggressive');
+        $strategyOpt = $input->getOption('strategy');
+        if ($strategyOpt && in_array(strtolower($strategyOpt), ['balanced', 'aggressive'], true)) {
+            $aiStrategy = strtolower($strategyOpt);
+        } else {
+            $aiStrategy = 'balanced';
+            if ($poolMode === 'AI') {
+                $aiStrategy = $this->promptSelect('Wybierz strategię doboru liczb przez AI:', [
+                    'balanced' => 'Zbalansowana (Klasyczna Hybryda, równowaga)',
+                    'aggressive' => 'Ostra Gra (Łowca Trendów - maks. ryzyko na klastry i liczby gorące)',
+                ], 'aggressive');
+            }
         }
 
         $fullPool = [];
 
         if ($poolMode === 'AI') {
-            $poolSize = (int)$this->promptInput("Ile liczb ma wybrać AI? (dla gry {$gameType} losujemy {$game['pick']} z {$game['from']})", '20');
+            $poolSizeOpt = $input->getOption('pool-size');
+            if ($poolSizeOpt && is_numeric($poolSizeOpt) && (int)$poolSizeOpt >= $game['pick']) {
+                $poolSize = (int)$poolSizeOpt;
+            } else {
+                $poolSize = (int)$this->promptInput("Ile liczb ma wybrać AI? (dla gry {$gameType} losujemy {$game['pick']} z {$game['from']})", '20');
+            }
 
             $io->text("Uruchamianie ReAct Agent AI (Gemini + Narzędzia Statystyczne OpenAPI)...");
 
@@ -175,7 +199,10 @@ class LottoTuiCommand extends Command
                 }
             };
 
-            $result = $this->reactAgentService->runAgentLoop($gameType, $poolSize, $onStepCallback);
+            $sessionsOpt = $input->getOption('sessions');
+            $sessions = $sessionsOpt !== null && is_numeric($sessionsOpt) ? (int)$sessionsOpt : null;
+
+            $result = $this->reactAgentService->runAgentLoop($gameType, $poolSize, $aiStrategy, $onStepCallback, $sessions);
             $fullPool = $result['pool'] ?? $result['selected_pool'] ?? [];
             sort($fullPool);
 
@@ -196,15 +223,20 @@ class LottoTuiCommand extends Command
             return Command::FAILURE;
         }
 
-        $io->section("METODA PRACY (Generator)");
-        $mode = $this->promptSelect('Wybierz tryb:', [
-            '1' => '[1] RĘCZNY (Jeden blok = Pula wejściowa)',
-            '2' => '[2] KREATOR BLOKÓW (Inteligentny Krupier)',
-            '3' => '[3] GENERATOR WAŻONY (Statystyczny)',
-            '4' => '[4] SYSTEM HYBRYDOWY (Stali Bankierzy + Zmienne z Puli)',
-            '5' => '[5] SYSTEM FRAKTALNY (Zaawansowane bloki)',
-            '6' => '[6] SYSTEM ROZDZIELNY (Bankierzy Rotacyjni)',
-        ], '1');
+        $modeOpt = $input->getOption('mode');
+        if ($modeOpt && in_array((string)$modeOpt, ['1', '2', '3', '4', '5', '6'], true)) {
+            $mode = (string)$modeOpt;
+        } else {
+            $io->section("METODA PRACY (Generator)");
+            $mode = $this->promptSelect('Wybierz tryb:', [
+                '1' => '[1] RĘCZNY (Jeden blok = Pula wejściowa)',
+                '2' => '[2] KREATOR BLOKÓW (Inteligentny Krupier)',
+                '3' => '[3] GENERATOR WAŻONY (Statystyczny)',
+                '4' => '[4] SYSTEM HYBRYDOWY (Stali Bankierzy + Zmienne z Puli)',
+                '5' => '[5] SYSTEM FRAKTALNY (Zaawansowane bloki)',
+                '6' => '[6] SYSTEM ROZDZIELNY (Bankierzy Rotacyjni)',
+            ], '1');
+        }
 
         $blocksToProcess = [];
 

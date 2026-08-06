@@ -37,6 +37,10 @@ class LottoGeneratorCommand extends Command
         $this->addOption('game', 'g', InputOption::VALUE_REQUIRED, 'Typ gry do analizy');
         $this->addOption('sessions', 's', InputOption::VALUE_REQUIRED, 'Ilość ostatnich losowań do pobrania statystyk');
         $this->addOption('bets', 'b', InputOption::VALUE_REQUIRED, 'Ile zakładów ma wygenerować system?');
+        $this->addOption('strategy', 'st', InputOption::VALUE_REQUIRED, 'Strategia doboru liczb przez AI (balanced/aggressive)');
+        $this->addOption('pool-size', 'p', InputOption::VALUE_REQUIRED, 'Rozmiar puli liczb wybieranych przez AI');
+        $this->addOption('pool-mode', 'pm', InputOption::VALUE_REQUIRED, 'Metoda doboru puli (AI/Manual)');
+        $this->addOption('mode', 'm', InputOption::VALUE_REQUIRED, 'Tryb pracy generatora (1-6)');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -56,27 +60,55 @@ class LottoGeneratorCommand extends Command
         $game = $this->gameRegistryService->getGameConfig($gameType);
 
         if ($gameType === 'MultiMulti') {
-            $pickSize = (int)$io->choice('Ile liczb chcesz skreślać na jednym zakładzie (strategia Multi Multi)?', ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'], '10');
+            $poolSizeOpt = $input->getOption('pool-size');
+            if ($poolSizeOpt && is_numeric($poolSizeOpt) && (int)$poolSizeOpt >= 1 && (int)$poolSizeOpt <= 10) {
+                $pickSize = (int)$poolSizeOpt;
+            } else {
+                $pickSize = (int)$io->choice('Ile liczb chcesz skreślać na jednym zakładzie (strategia Multi Multi)?', ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'], '10');
+            }
             $game['pick'] = $pickSize;
         }
 
-        $poolMode = $io->choice('Jak chcesz wygenerować pulę wejściową liczb?', [
-            'AI' => 'AI (Na podstawie statystyk LOTTO API)',
-            'Manual' => 'Ręcznie (Wpisz własne liczby)',
-        ], 'AI');
+        $poolModeOpt = $input->getOption('pool-mode');
+        if ($poolModeOpt && in_array(strtolower($poolModeOpt), ['ai', 'manual'], true)) {
+            $poolMode = strtolower($poolModeOpt) === 'ai' ? 'AI' : 'Manual';
+        } else {
+            $poolMode = $io->choice('Jak chcesz wygenerować pulę wejściową liczb?', [
+                'AI' => 'AI (Na podstawie statystyk LOTTO API)',
+                'Manual' => 'Ręcznie (Wpisz własne liczby)',
+            ], 'AI');
+        }
+
+        $strategyOpt = $input->getOption('strategy');
+        if ($strategyOpt && in_array(strtolower($strategyOpt), ['balanced', 'aggressive'], true)) {
+            $aiStrategy = strtolower($strategyOpt);
+        } else {
+            $aiStrategy = 'balanced';
+            if ($poolMode === 'AI') {
+                $aiStrategy = $io->choice('Wybierz strategię doboru liczb przez AI:', [
+                    'balanced' => 'Zbalansowana (Klasyczna Hybryda, równowaga)',
+                    'aggressive' => 'Ostra Gra (Łowca Trendów - maks. ryzyko na klastry i liczby gorące)',
+                ], 'aggressive');
+            }
+        }
 
         $fullPool = [];
 
         if ($poolMode === 'AI') {
             $sessions = $input->getOption('sessions') ?: $io->ask('Z ilu ostatnich losowań pobrać statystyki (np. 50)?', '50');
-            $poolSize = (int)$io->ask("Ile liczb ma wybrać AI? (dla gry {$gameType} losujemy {$game['pick']} z {$game['from']})", '20');
+            $poolSizeOpt = $input->getOption('pool-size');
+            if ($poolSizeOpt && is_numeric($poolSizeOpt) && (int)$poolSizeOpt >= $game['pick']) {
+                $poolSize = (int)$poolSizeOpt;
+            } else {
+                $poolSize = (int)$io->ask("Ile liczb ma wybrać AI? (dla gry {$gameType} losujemy {$game['pick']} z {$game['from']})", '20');
+            }
 
             $io->text("Pobieranie statystyk z ostatnich $sessions losowań...");
             $statsData = $this->lottoApiClient->fetchStatisticsForSessions($gameType, (int)$sessions);
             $statsSummary = $this->lottoApiClient->getHotAndColdNumbers($statsData, 10);
 
-            $io->text("Pytanie AI (Gemini) o $poolSize liczb...");
-            $fullPool = $this->geminiApiClient->askForPool($gameType, $statsSummary['hotStr'], $statsSummary['coldStr'], $poolSize, 'balanced');
+            $io->text("Pytanie AI (Gemini) o $poolSize liczb (strategia: $aiStrategy)...");
+            $fullPool = $this->geminiApiClient->askForPool($gameType, $statsSummary['hotStr'], $statsSummary['coldStr'], $poolSize, $aiStrategy);
             sort($fullPool);
             $io->success("Pula AI: " . implode(', ', $fullPool));
         } else {
@@ -92,15 +124,20 @@ class LottoGeneratorCommand extends Command
             return Command::FAILURE;
         }
 
-        $io->section("METODA PRACY (Generator)");
-        $mode = $io->choice('Wybierz tryb:', [
-            '1' => '[1] RĘCZNY (Jeden blok = Pula wejściowa)',
-            '2' => '[2] KREATOR BLOKÓW (Inteligentny Krupier)',
-            '3' => '[3] GENERATOR WAŻONY (Statystyczny)',
-            '4' => '[4] SYSTEM HYBRYDOWY (Stali Bankierzy + Zmienne z Puli)',
-            '5' => '[5] SYSTEM FRAKTALNY (Zaawansowane bloki)',
-            '6' => '[6] SYSTEM ROZDZIELNY (Bankierzy Rotacyjni)',
-        ], '1');
+        $modeOpt = $input->getOption('mode');
+        if ($modeOpt && in_array((string)$modeOpt, ['1', '2', '3', '4', '5', '6'], true)) {
+            $mode = (string)$modeOpt;
+        } else {
+            $io->section("METODA PRACY (Generator)");
+            $mode = $io->choice('Wybierz tryb:', [
+                '1' => '[1] RĘCZNY (Jeden blok = Pula wejściowa)',
+                '2' => '[2] KREATOR BLOKÓW (Inteligentny Krupier)',
+                '3' => '[3] GENERATOR WAŻONY (Statystyczny)',
+                '4' => '[4] SYSTEM HYBRYDOWY (Stali Bankierzy + Zmienne z Puli)',
+                '5' => '[5] SYSTEM FRAKTALNY (Zaawansowane bloki)',
+                '6' => '[6] SYSTEM ROZDZIELNY (Bankierzy Rotacyjni)',
+            ], '1');
+        }
 
         $blocksToProcess = [];
 
