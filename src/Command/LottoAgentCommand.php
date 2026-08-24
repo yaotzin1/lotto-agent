@@ -41,7 +41,7 @@ class LottoAgentCommand extends Command
         $this->addOption('months', 'm', InputOption::VALUE_REQUIRED, 'Z ilu ostatnich miesięcy pobrać statystyki?');
         $this->addOption('neighbours', null, InputOption::VALUE_NONE, 'Czy uwzględniać w analizie liczby sąsiadujące?');
         $this->addOption('sessions', 's', InputOption::VALUE_REQUIRED, 'Ilość ostatnich losowań do analizy (zamiast miesięcy)');
-        $this->addOption('strategy', 'st', InputOption::VALUE_REQUIRED, 'Strategia doboru liczb przez AI (balanced/aggressive)');
+        $this->addOption('strategy', 'st', InputOption::VALUE_REQUIRED, 'Strategia doboru liczb przez AI (syndicate/balanced/aggressive)');
         $this->addOption('json-output', 'j', InputOption::VALUE_NONE, 'Zwróć odpowiedź w formacie JSON');
     }
 
@@ -72,7 +72,10 @@ class LottoAgentCommand extends Command
 
         $months = $input->getOption('months');
         $sessions = $input->getOption('sessions');
-        $strategy = $input->getOption('strategy') ?: 'balanced';
+        $strategy = $input->getOption('strategy');
+        if (!$strategy) {
+            $strategy = 'syndicate';
+        }
         $isJson = (bool) $input->getOption('json-output');
 
         if (!$months && !$sessions) {
@@ -131,7 +134,7 @@ class LottoAgentCommand extends Command
             };
 
             $poolSize = max($pickCount + 4, 12);
-            $reactResult = $this->reActAgentService->runAgentLoop($gameType, $poolSize, $strategy, $onStepCallback, $sessions, $months);
+            $reactResult = $this->reActAgentService->runAgentLoop($gameType, $poolSize, $strategy, $onStepCallback, $sessions, $months, $includeNeighbours);
 
             $pool = $reactResult['pool'];
             $reasoning = $reactResult['reasoning'];

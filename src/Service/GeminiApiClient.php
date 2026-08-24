@@ -13,14 +13,14 @@ class GeminiApiClient
     private const MODELS_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
     
     private const FALLBACK_MODELS = [
+        'gemini-3.7-flash',
         'gemini-3.6-flash',
         'gemini-3.5-flash',
         'gemini-2.5-flash',
-        'gemini-2.0-flash',
-        'gemini-1.5-flash',
         'gemini-flash-latest',
+        'gemini-pro-latest',
         'gemini-2.5-pro',
-        'gemini-1.5-pro',
+        'gemini-3.5-flash-lite',
     ];
 
     public function __construct(
@@ -46,9 +46,11 @@ class GeminiApiClient
                 break;
             } catch (\Throwable $e) {
                 $statusCode = $e instanceof \Symfony\Contracts\HttpClient\Exception\HttpExceptionInterface ? $e->getResponse()->getStatusCode() : 0;
-                if ($attempt < $maxRetries && ($statusCode === 503 || $statusCode === 429 || $statusCode >= 500)) {
-                    sleep($retryDelay);
-                    $retryDelay *= 2;
+                if ($attempt < $maxRetries && ($statusCode === 404 || $statusCode === 503 || $statusCode === 429 || $statusCode >= 500)) {
+                    if ($statusCode !== 404) {
+                        sleep($retryDelay);
+                        $retryDelay *= 2;
+                    }
                 } else {
                     throw $e;
                 }
@@ -77,13 +79,30 @@ class GeminiApiClient
                     'verify_host' => false,
                 ]);
 
-                $aiText = $response->toArray()['candidates'][0]['content']['parts'][0]['text'] ?? '';
+                $resArray = $response->toArray();
+                $parts = $resArray['candidates'][0]['content']['parts'] ?? [];
+                $textParts = [];
+
+                foreach ($parts as $part) {
+                    if (isset($part['thought']) && $part['thought'] === true) {
+                        continue;
+                    }
+                    if (isset($part['text']) && is_string($part['text'])) {
+                        $textParts[] = $part['text'];
+                    }
+                }
+
+                $aiText = trim(implode("\n", $textParts));
+                if ($aiText === '' && !empty($parts[0]['text'])) {
+                    $aiText = trim((string)$parts[0]['text']);
+                }
+
                 break;
             } catch (\Throwable $e) {
                 $statusCode = $e instanceof \Symfony\Contracts\HttpClient\Exception\HttpExceptionInterface ? $e->getResponse()->getStatusCode() : 0;
                 $errorContent = $e instanceof \Symfony\Contracts\HttpClient\Exception\HttpExceptionInterface ? $e->getResponse()->getContent(false) : '';
 
-                if ($attempt < $maxRetries && ($statusCode === 503 || $statusCode === 429 || $statusCode >= 500)) {
+                if ($attempt < $maxRetries && ($statusCode === 404 || $statusCode === 503 || $statusCode === 429 || $statusCode >= 500)) {
                     $nextModel = self::FALLBACK_MODELS[$attempt];
                     $waitSec = $retryDelay;
                     if (preg_match('/"retryDelay":\s*"(\d+)s"/', $errorContent, $match)) {
@@ -91,15 +110,15 @@ class GeminiApiClient
                     }
 
                     $this->logger->warning(sprintf(
-                        "Gemini API rate limit/error (%d) with model %s. Switching to %s, retrying attempt %d in %d seconds...",
+                        "Gemini API error (%d) with model %s. Switching to %s...",
                         $statusCode,
                         $currentModel,
-                        $nextModel,
-                        $attempt + 1,
-                        $waitSec
+                        $nextModel
                     ));
-                    sleep($waitSec);
-                    $retryDelay = max($retryDelay * 2, $waitSec);
+                    if ($statusCode !== 404) {
+                        sleep($waitSec);
+                        $retryDelay = max($retryDelay * 2, $waitSec);
+                    }
                 } else {
                     $this->logger->error("Gemini API Request Failed ($statusCode): $errorContent", ['payload' => $payload]);
                     throw $e;
@@ -110,8 +129,12 @@ class GeminiApiClient
         return $aiText;
     }
 
-    public function generateContentWithTools(array $contents, array $toolsDeclarations, int $timeoutSeconds = 120): array
-    {
+    public function generateContentWithTools(
+        array $contents,
+        array $toolsDeclarations,
+        ?string $systemInstruction = null,
+        int $timeoutSeconds = 120
+    ): array {
         $maxRetries = count(self::FALLBACK_MODELS);
         $retryDelay = 2;
         $candidateContent = [];
@@ -120,6 +143,12 @@ class GeminiApiClient
             'contents' => $contents,
             'generationConfig' => ['temperature' => 0.2],
         ];
+
+        if ($systemInstruction !== null && trim($systemInstruction) !== '') {
+            $payload['systemInstruction'] = [
+                'parts' => [['text' => $systemInstruction]]
+            ];
+        }
 
         if (!empty($toolsDeclarations)) {
             $payload['tools'] = [
@@ -147,7 +176,7 @@ class GeminiApiClient
                 $statusCode = $e instanceof \Symfony\Contracts\HttpClient\Exception\HttpExceptionInterface ? $e->getResponse()->getStatusCode() : 0;
                 $errorContent = $e instanceof \Symfony\Contracts\HttpClient\Exception\HttpExceptionInterface ? $e->getResponse()->getContent(false) : '';
 
-                if ($attempt < $maxRetries && ($statusCode === 503 || $statusCode === 429 || $statusCode >= 500)) {
+                if ($attempt < $maxRetries && ($statusCode === 404 || $statusCode === 503 || $statusCode === 429 || $statusCode >= 500)) {
                     $nextModel = self::FALLBACK_MODELS[$attempt];
                     $waitSec = $retryDelay;
                     if (preg_match('/"retryDelay":\s*"(\d+)s"/', $errorContent, $match)) {
@@ -155,15 +184,15 @@ class GeminiApiClient
                     }
 
                     $this->logger->warning(sprintf(
-                        "Gemini API error (%d) with model %s. Switching to %s, retrying attempt %d in %d seconds...",
+                        "Gemini API error (%d) with model %s. Switching to %s...",
                         $statusCode,
                         $currentModel,
-                        $nextModel,
-                        $attempt + 1,
-                        $waitSec
+                        $nextModel
                     ));
-                    sleep($waitSec);
-                    $retryDelay = max($retryDelay * 2, $waitSec);
+                    if ($statusCode !== 404) {
+                        sleep($waitSec);
+                        $retryDelay = max($retryDelay * 2, $waitSec);
+                    }
                 } else {
                     $this->logger->error("Gemini API Request Failed ($statusCode): $errorContent", ['payload' => $payload]);
                     throw new \RuntimeException("Gemini API error ($statusCode): " . mb_strimwidth($errorContent, 0, 300, '...'), 0, $e);

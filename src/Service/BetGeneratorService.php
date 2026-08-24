@@ -6,7 +6,23 @@ namespace App\Service;
 
 class BetGeneratorService
 {
-    // === SILNIK FRAKTALNY (ROLLING OVERLAP) ===
+    public function __construct(
+        private readonly ?StatisticalOptimizerService $statisticalOptimizer = null
+    ) {
+    }
+
+    // === SILNIK OPTYMALIZACJI STATYSTYCZNEJ DLA ROZWODNIENIA ===
+    public function generateStatisticalOptimizedBets(
+        array $pool,
+        int $pick,
+        int $limit,
+        array $frequencies,
+        int $maxNumber,
+        array $options = []
+    ): array {
+        $optimizer = $this->statisticalOptimizer ?? new StatisticalOptimizerService(new GameRegistryService(), new \Psr\Log\NullLogger());
+        return $optimizer->optimizeBetsForDilution($pool, $pick, $limit, $frequencies, $maxNumber, $options);
+    }
     public function generateOverlappingBlocks(array $pool, int $numBlocks, int $blockSize): array
     {
         $poolCount = count($pool);

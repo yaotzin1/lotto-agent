@@ -72,4 +72,19 @@ class BetGeneratorServiceTest extends TestCase
         $this->assertSame(210, $coverage['total_draws']); // 10 choose 6 = 210
         $this->assertGreaterThan(0, $coverage['guarantees'][3]);
     }
+
+    public function testGenerateStatisticalOptimizedBets(): void
+    {
+        $pool = range(1, 30);
+        $frequencies = array_fill_keys($pool, 5);
+
+        $result = $this->service->generateStatisticalOptimizedBets($pool, 6, 10, $frequencies, 49);
+
+        $this->assertArrayHasKey('bets', $result);
+        $this->assertArrayHasKey('report', $result);
+        $this->assertCount(10, $result['bets']);
+        foreach ($result['bets'] as $bet) {
+            $this->assertCount(6, $bet);
+        }
+    }
 }

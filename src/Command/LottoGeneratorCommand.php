@@ -8,6 +8,8 @@ use App\Service\BetGeneratorService;
 use App\Service\GameRegistryService;
 use App\Service\GeminiApiClient;
 use App\Service\LottoApiClient;
+use App\Service\ReActAgentService;
+use App\Service\StatisticalOptimizerService;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
@@ -27,6 +29,8 @@ class LottoGeneratorCommand extends Command
         private readonly GeminiApiClient $geminiApiClient,
         private readonly GameRegistryService $gameRegistryService,
         private readonly BetGeneratorService $generatorService,
+        private readonly ReActAgentService $reactAgentService,
+        private readonly StatisticalOptimizerService $statisticalOptimizer,
         private readonly LoggerInterface $logger
     ) {
         parent::__construct();
@@ -40,7 +44,7 @@ class LottoGeneratorCommand extends Command
         $this->addOption('strategy', 'st', InputOption::VALUE_REQUIRED, 'Strategia doboru liczb przez AI (balanced/aggressive)');
         $this->addOption('pool-size', 'p', InputOption::VALUE_REQUIRED, 'Rozmiar puli liczb wybieranych przez AI');
         $this->addOption('pool-mode', 'pm', InputOption::VALUE_REQUIRED, 'Metoda doboru puli (AI/Manual)');
-        $this->addOption('mode', 'm', InputOption::VALUE_REQUIRED, 'Tryb pracy generatora (1-6)');
+        $this->addOption('mode', 'm', InputOption::VALUE_REQUIRED, 'Tryb pracy generatora (1-7)');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -80,22 +84,28 @@ class LottoGeneratorCommand extends Command
         }
 
         $strategyOpt = $input->getOption('strategy');
-        if ($strategyOpt && in_array(strtolower($strategyOpt), ['balanced', 'aggressive'], true)) {
+        if ($strategyOpt && in_array(strtolower($strategyOpt), ['syndicate', 'balanced', 'aggressive'], true)) {
             $aiStrategy = strtolower($strategyOpt);
         } else {
-            $aiStrategy = 'balanced';
+            $aiStrategy = 'syndicate';
             if ($poolMode === 'AI') {
                 $aiStrategy = $io->choice('Wybierz strategię doboru liczb przez AI:', [
+                    'syndicate' => 'Syndykat Klastrowy (60% sąsiedzi, 20% powtórki wygranych, 20% uśpione)',
                     'balanced' => 'Zbalansowana (Klasyczna Hybryda, równowaga)',
                     'aggressive' => 'Ostra Gra (Łowca Trendów - maks. ryzyko na klastry i liczby gorące)',
-                ], 'aggressive');
+                ], 'syndicate');
             }
         }
 
         $fullPool = [];
 
         if ($poolMode === 'AI') {
-            $sessions = $input->getOption('sessions') ?: $io->ask('Z ilu ostatnich losowań pobrać statystyki (np. 50)?', '50');
+            $sessionsOpt = $input->getOption('sessions');
+            $sessions = $sessionsOpt !== null && is_numeric($sessionsOpt) ? (int)$sessionsOpt : null;
+            if (!$sessions) {
+                $sessions = (int)$io->ask('Z ilu ostatnich losowań pobrać statystyki (np. 50)?', '50');
+            }
+
             $poolSizeOpt = $input->getOption('pool-size');
             if ($poolSizeOpt && is_numeric($poolSizeOpt) && (int)$poolSizeOpt >= $game['pick']) {
                 $poolSize = (int)$poolSizeOpt;
@@ -103,14 +113,31 @@ class LottoGeneratorCommand extends Command
                 $poolSize = (int)$io->ask("Ile liczb ma wybrać AI? (dla gry {$gameType} losujemy {$game['pick']} z {$game['from']})", '20');
             }
 
-            $io->text("Pobieranie statystyk z ostatnich $sessions losowań...");
-            $statsData = $this->lottoApiClient->fetchStatisticsForSessions($gameType, (int)$sessions);
-            $statsSummary = $this->lottoApiClient->getHotAndColdNumbers($statsData, 10);
+            $io->text("Uruchamianie ReAct Agent AI (Gemini + Narzędzia Statystyczne)...");
 
-            $io->text("Pytanie AI (Gemini) o $poolSize liczb (strategia: $aiStrategy)...");
-            $fullPool = $this->geminiApiClient->askForPool($gameType, $statsSummary['hotStr'], $statsSummary['coldStr'], $poolSize, $aiStrategy);
+            $onStepCallback = function (string $type, array $data) use ($io): void {
+                if ($type === 'tool_call') {
+                    $io->text(sprintf(
+                        "🤖 <fg=cyan>[Agent Thought/Action]</fg=cyan> Uruchamiam narzędzie <fg=yellow>%s</fg=yellow> z parametrami: %s",
+                        $data['tool'],
+                        json_encode($data['args'])
+                    ));
+                } elseif ($type === 'tool_result') {
+                    $io->text(sprintf(
+                        "📊 <fg=green>[Observation]</fg=green> Otrzymano wynik z narzędzia %s.",
+                        $data['tool']
+                    ));
+                }
+            };
+
+            $result = $this->reactAgentService->runAgentLoop($gameType, $poolSize, $aiStrategy, $onStepCallback, $sessions);
+            $fullPool = $result['pool'] ?? $result['selected_pool'] ?? [];
             sort($fullPool);
-            $io->success("Pula AI: " . implode(', ', $fullPool));
+
+            if (!empty($result['reasoning'])) {
+                $io->text("<comment>Uzasadnienie ReAct Agent:</comment> " . $result['reasoning']);
+            }
+            $io->success("Pula AI (" . count($fullPool) . " liczb): " . implode(', ', $fullPool));
         } else {
             $poolStr = $io->ask('Podaj pulę liczb oddzielonych spacją lub przecinkiem (np. 1 5 12 18):');
             preg_match_all('/\d+/', $poolStr, $matches);
@@ -125,7 +152,7 @@ class LottoGeneratorCommand extends Command
         }
 
         $modeOpt = $input->getOption('mode');
-        if ($modeOpt && in_array((string)$modeOpt, ['1', '2', '3', '4', '5', '6'], true)) {
+        if ($modeOpt && in_array((string)$modeOpt, ['1', '2', '3', '4', '5', '6', '7'], true)) {
             $mode = (string)$modeOpt;
         } else {
             $io->section("METODA PRACY (Generator)");
@@ -136,12 +163,35 @@ class LottoGeneratorCommand extends Command
                 '4' => '[4] SYSTEM HYBRYDOWY (Stali Bankierzy + Zmienne z Puli)',
                 '5' => '[5] SYSTEM FRAKTALNY (Zaawansowane bloki)',
                 '6' => '[6] SYSTEM ROZDZIELNY (Bankierzy Rotacyjni)',
+                '7' => '[7] OPTYMALIZACJA STATYSTYCZNA (Synergia Par/Trójek przy Rozwodnieniu Puli)',
             ], '1');
         }
 
         $blocksToProcess = [];
+        $statsReport = null;
 
-        if ($mode === '6') {
+        if ($mode === '7') {
+            $io->text("OPTYMALIZACJA STATYSTYCZNA PRZY ROZWODNIENIU (Synergia Par i Trójek)");
+            $betsLimit = (int)($input->getOption('bets') ?: $io->ask('Ile zakładów wygenerować z puli (np. 100 lub 25)?', '100'));
+            
+            $sessions = (int)($input->getOption('sessions') ?: 50);
+            $dateFrom = $this->gameRegistryService->calculateDateFromForSessions($gameType, $sessions);
+            $statsData = $this->lottoApiClient->getHotColdNumbers($gameType, $dateFrom);
+            $frequencies = $statsData['sorted_by_freq_desc'] ?? [];
+
+            $io->text("Uruchamianie algorytmu optymalizatora heurystycznego...");
+            $optResult = $this->statisticalOptimizer->optimizeBetsForDilution(
+                $fullPool,
+                $game['pick'],
+                $betsLimit,
+                $frequencies,
+                $game['from'] ?? 49
+            );
+
+            $blocksToProcess[] = ['type' => 'precalc', 'bets' => $optResult['bets']];
+            $statsReport = $optResult['report'];
+
+        } elseif ($mode === '6') {
             $io->text("SYSTEM ROZDZIELNY (BANKIERZY ROTACYJNI)");
             $bankStr = $io->ask('Wpisz liczby BANKIERÓW z Puli (np. 8 sztuk):');
             preg_match_all('/\d+/', $bankStr, $matches);
@@ -284,6 +334,33 @@ class LottoGeneratorCommand extends Command
         }
         $io->table(['L.p.', 'Liczby'], $tableData);
 
+        // --- OKNO STATYSTYCZNE (Dla trybu 7 lub dużej puli) ---
+        if ($statsReport !== null) {
+            $io->section("📊 OKNO STATYSTYCZNE: PROFIL ZESTAWU I ROZWODNIENIE");
+
+            $dm = $statsReport['dilution_metrics'];
+            $io->table(
+                ['Metryka', 'Wartość'],
+                [
+                    ['Liczba liczb w Puli', count($fullPool)],
+                    ['Kombinacje w wybranej puli C(N, k)', number_format($dm['pool_combinations_total'], 0, ',', ' ')],
+                    ['Współczynnik Rozwodnienia', sprintf('%s (%s%%)', $dm['dilution_ratio_str'], $dm['dilution_factor_pct'])],
+                    ['Średnie użycie liczby', sprintf('%.2f razy', $dm['avg_repeats_per_number'])],
+                    ['Pokrycie unikalnych par', sprintf('%d z %d (%.1f%%)', $statsReport['unique_pairs_covered'], $statsReport['unique_pairs_total_in_pool'], $statsReport['pairs_coverage_pct'])],
+                ]
+            );
+
+            $bench = $statsReport['benchmark'];
+            $io->table(
+                ['Wskaźnik', 'Optymalizator', 'Losowy Baseline', 'Przewaga'],
+                [
+                    ['Średni Synergy Score', sprintf('%.1f', $bench['optimized_avg_synergy_score']), sprintf('%.1f', $bench['random_baseline_avg_score']), sprintf('+%.1f%%', $bench['synergy_advantage_percent'])],
+                    ['Zgodność z Gaussa (Sumy)', sprintf('%.1f%%', $bench['optimized_gaussian_adherence_pct']), sprintf('%.1f%%', $bench['random_gaussian_adherence_pct']), sprintf('+%.1f pp', $bench['optimized_gaussian_adherence_pct'] - $bench['random_gaussian_adherence_pct'])],
+                    ['Balans Parzystości', sprintf('%.1f%%', $bench['optimized_parity_balance_pct']), sprintf('%.1f%%', $bench['random_parity_balance_pct']), sprintf('+%.1f pp', $bench['optimized_parity_balance_pct'] - $bench['random_parity_balance_pct'])],
+                ]
+            );
+        }
+
         // --- WERYFIKATOR POKRYCIA ---
         $io->section("ANALIZA POKRYCIA (Gwarancje Matematyczne)");
         $assumeHits = $game['pick'];
@@ -311,7 +388,7 @@ class LottoGeneratorCommand extends Command
                 $io->warning("Nie udało się przeprowadzić symulacji: " . $e->getMessage());
             }
         } else {
-            $io->warning("Pula jest zbyt duża (" . count($fullPool) . " liczb) na pełną symulację w pamięci RAM.");
+            $io->warning("Pula jest zbyt duża (" . count($fullPool) . " liczb) na pełną symulację kombinatoryczną w czasie rzeczywistym.");
         }
 
         return Command::SUCCESS;
