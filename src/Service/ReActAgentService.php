@@ -26,6 +26,7 @@ class ReActAgentService
      * @param callable|null $onStepCallback Optional callback function(string $type, array $data): void for CLI/TUI feedback
      * @param int|null $sessions Number of recent sessions to analyze
      * @param int|null $months Number of recent months to analyze
+     * @param bool $includeNeighbours Whether to include neighbouring numbers (+1/-1) in analysis
      * @return array{pool: array<int>, selected_pool: array<int>, reasoning: string, steps: array}
      */
     public function runAgentLoop(
@@ -34,7 +35,8 @@ class ReActAgentService
         string|callable|null $strategy = 'balanced',
         ?callable $onStepCallback = null,
         ?int $sessions = null,
-        ?int $months = null
+        ?int $months = null,
+        bool $includeNeighbours = false
     ): array {
         if (is_callable($strategy)) {
             $onStepCallback = $strategy;
@@ -48,33 +50,50 @@ class ReActAgentService
         $maxNumber = $config['from'] ?? 49;
         $pickCount = $config['pick'] ?? 6;
 
-        $strategyInstruction = $strategy === 'aggressive'
-            ? "STRATEGIA SELEKCJI: Ostra Gra (Łowca Trendów - maksymalne ryzyko na klastry i liczby gorące). Skup się w 80-90% na najczęstszych liczbach (Gorących) i ich bezpośrednich sąsiadach/anomaliach. Zignoruj klasyczny balans parzystości czy równomierny rozkład w zakresie."
-            : "STRATEGIA SELEKCJI: Zbalansowana (Klasyczna Hybryda, równowaga). Wybierz około 60-70% liczb Gorących oraz 30-40% Zimnych. Zadbaj o zrównoważony balans parzyste/nieparzyste i równomierny rozkład w zakresie.";
+        if ($strategy === 'syndicate') {
+            $strategyInstruction = "STRATEGIA SELEKCJI: Syndykat Klastrowy (Cluster-Breakout Strategy).
+Pula wejściowa DOKŁADNIE $poolSize liczb MUSI składać się z trzech składowych w ścisłych proporcjach:
+1. SĄSIEDZI (ok. 60% puli): Wybierz matematycznych sąsiadów (+1/-1) ostatnich liczb wygranych o najwyższej sile klastra (użyj narzędzia 'fetch_neighbours_analysis').
+2. POWTÓRKI WYGRANYCH (ok. 20% puli): Wybierz bezpośrednie liczby wygrane z ostatniego losowania (anchors).
+3. ZIMNE / IZOLOWANE (ok. 20% puli): Dobierz uśpione liczby z odległych stref bębna (dystans > 2 od strefy wygranych) dla przełamania serii.
+Koniecznie wywołaj narzędzie 'fetch_neighbours_analysis' w Fazie 1!";
+        } elseif ($strategy === 'aggressive') {
+            $strategyInstruction = "STRATEGIA SELEKCJI: Ostra Gra (Łowca Trendów - maksymalne ryzyko na klastry i liczby gorące). Skup się w 80-90% na najczęstszych liczbach (Gorących) i ich bezpośrednich sąsiadach/anomaliach. Zignoruj klasyczny balans parzystości czy równomierny rozkład w zakresie.";
+        } else {
+            $strategyInstruction = "STRATEGIA SELEKCJI: Zbalansowana (Klasyczna Hybryda, równowaga). Wybierz około 60-70% liczb Gorących oraz 30-40% Zimnych/Opóźnionych. Zadbaj o zrównoważony balans parzyste/nieparzyste i równomierny rozkład w zakresie.";
+        }
 
         $timeframeInstruction = '';
         if ($sessions !== null && $sessions > 0) {
-            $timeframeInstruction = "\nZAKRES ANALIZY: Analizuj dane wyłącznie dla OSTATNICH $sessions LOSOWAŃ. Wywołując narzędzie 'fetch_hot_cold_stats' lub 'fetch_recent_draws', UŻYWAJ parametru 'sessions': $sessions (oraz 'count': $sessions).";
+            $timeframeInstruction = "\nZAKRES ANALIZY: Analizuj dane wyłącznie dla OSTATNICH $sessions LOSOWAŃ. Wywołując narzędzie 'fetch_neighbours_analysis', 'fetch_hot_cold_stats', 'fetch_overdue_stats' lub 'fetch_recent_draws', UŻYWAJ parametru 'sessions': $sessions.";
         } elseif ($months !== null && $months > 0) {
-            $timeframeInstruction = "\nZAKRES ANALIZY: Analizuj dane dla ostatnich $months miesięcy. Wywołując narzędzie 'fetch_hot_cold_stats', UŻYWAJ parametru 'months': $months.";
+            $timeframeInstruction = "\nZAKRES ANALIZY: Analizuj dane dla ostatnich $months miesięcy. Wywołując narzędzie 'fetch_neighbours_analysis' lub 'fetch_hot_cold_stats', UŻYWAJ parametru 'months': $months.";
         }
 
-        $systemPrompt = "Jesteś autonomicznym Analitykiem AI (ReAct Agent) ds. Gier Liczbowych.
+        $neighbourInstruction = $includeNeighbours
+            ? "\nUWZGLĘDNIANIE SĄSIADÓW (+1/-1): Zwróć szczególną uwagę na dodawanie matematycznych sąsiadów liczb gorących do puli kandydującej."
+            : '';
+
+        $systemPrompt = "Jesteś autonomicznym Głównym Analitykiem AI (ReAct Agent) ds. Gier Liczbowych.
 Twoim celem jest wyselekcjonowanie optymalnej puli wejściowej DOKŁADNIE $poolSize unikalnych liczb (zakres 1-$maxNumber) dla gry $game.
 
-$strategyInstruction$timeframeInstruction
+$strategyInstruction$timeframeInstruction$neighbourInstruction
 
 MASZ DO DYSPOZYCJI NASTĘPUJĄCE NARZĘDZIA STATYSTYCZNE:
-1. 'fetch_hot_cold_stats': Pobierz statystyki częstotliwości liczb gorących i zimnych.
-2. 'fetch_recent_draws': Pobierz ostatnie wyniki losowań.
-3. 'evaluate_candidate_pool': Przeanalizuj parzystość, sumę i wariancję wytypowanej puli.
-4. 'test_system_coverage': Przeprowadź symulację pokrycia i gwarancji wygranych w systemie skróconym.
+1. 'fetch_neighbours_analysis': Zaawansowana analiza klastrowa sąsiadów (+1/-1), powtórek wygranych i liczb izolowanych.
+2. 'fetch_hot_cold_stats': Pobierz statystyki częstotliwości liczb gorących i zimnych.
+3. 'fetch_overdue_stats': Oblicz opóźnienia i uśpienia liczb (reversion-to-the-mean).
+4. 'fetch_pair_co_occurrence': Pobierz najczęstsze pary liczb występujące razem.
+5. 'fetch_recent_draws': Pobierz ostatnie wyniki losowań.
+6. 'evaluate_candidate_pool': Przeanalizuj parzystość, sumę i pary w proponowanej puli.
+7. 'evaluate_distribution': Przeanalizuj rozkład dekadowy i pozycję sumy na krzywej Gaussa.
+8. 'test_system_coverage': Przeprowadź symulację pokrycia w systemie skróconym.
 
-POSTĘPOWANIE (PROCEDURA REACT):
-1. Zawsze zacznij od pobrania statystyk ('fetch_hot_cold_stats' lub 'fetch_recent_draws').
-2. Zaproponuj wstępną pulę $poolSize liczb i przetestuj ją narzędziem 'evaluate_candidate_pool'.
-3. Dostosuj pulę zgodnie ze wskazaną strategią ($strategy) i przetestuj pokrycie narzędziem 'test_system_coverage'.
-4. Po przeanalizowaniu narzędziami, zwróć końcowy wynik WYŁĄCZNIE w formacie JSON:
+PROCEDURA REACT (4 FAZY REAZONOWANIA):
+Faza 1 [Eksploracja]: Użyj narzędzi statystycznych ('fetch_neighbours_analysis', 'fetch_hot_cold_stats', 'fetch_overdue_stats' lub 'fetch_pair_co_occurrence'), aby zebrać dane historyczne.
+Faza 2 [Hipoteza]: Sformułuj hipotezę doboru $poolSize liczb zgodną ze strategią ($strategy).
+Faza 3 [Weryfikacja]: Przetestuj proponowaną pulę narzędziami 'evaluate_candidate_pool' oraz 'evaluate_distribution'.
+Faza 4 [Synteza]: Zwróć końcowy wynik WYŁĄCZNIE w formacie JSON:
 {
   \"reasoning\": \"Zwięzłe uzasadnienie strategii i wybranych liczb (max 3 zdania).\",
   \"selected_pool\": [2, 7, 12, 24, 38, ...]
@@ -86,7 +105,7 @@ POSTĘPOWANIE (PROCEDURA REACT):
             [
                 'role' => 'user',
                 'parts' => [
-                    ['text' => $systemPrompt . "\n\nWykonaj analizę dla gry $game i wytypuj pulę $poolSize liczb stosując strategię: $strategy."],
+                    ['text' => "Wykonaj analizę dla gry $game i wytypuj pulę $poolSize liczb stosując strategię: $strategy."],
                 ],
             ],
         ];
@@ -100,7 +119,7 @@ POSTĘPOWANIE (PROCEDURA REACT):
         for ($turn = 1; $turn <= $maxTurns; $turn++) {
             $this->logger->info("ReAct Agent turn $turn", ['game' => $game, 'strategy' => $strategy]);
 
-            $content = $this->geminiApiClient->generateContentWithTools($contents, $toolsDeclarations);
+            $content = $this->geminiApiClient->generateContentWithTools($contents, $toolsDeclarations, $systemPrompt);
             $parts = $content['parts'] ?? [];
 
             if (empty($parts)) {
@@ -173,6 +192,13 @@ POSTĘPOWANIE (PROCEDURA REACT):
                 } elseif (isset($part['text'])) {
                     $text = $part['text'];
 
+                    if (isset($part['thought']) && $part['thought'] === true) {
+                        if ($onStepCallback) {
+                            $onStepCallback('thought', ['text' => $text]);
+                        }
+                        continue;
+                    }
+
                     if ($onStepCallback) {
                         $onStepCallback('thought', ['text' => $text]);
                     }
@@ -220,6 +246,9 @@ POSTĘPOWANIE (PROCEDURA REACT):
                 $finalContent = $this->geminiApiClient->generateContentWithTools($contents, []);
                 $parts = $finalContent['parts'] ?? [];
                 foreach ($parts as $part) {
+                    if (isset($part['thought']) && $part['thought'] === true) {
+                        continue;
+                    }
                     if (isset($part['text'])) {
                         $text = $part['text'];
                         if (preg_match('/\{.*"selected_pool".*\}/s', $text, $match)) {

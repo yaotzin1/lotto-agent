@@ -9,6 +9,7 @@ use App\Service\GameRegistryService;
 use App\Service\GeminiApiClient;
 use App\Service\LottoApiClient;
 use App\Service\ReActAgentService;
+use App\Service\StatisticalOptimizerService;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
@@ -35,6 +36,7 @@ class LottoTuiCommand extends Command
         private readonly GameRegistryService $gameRegistryService,
         private readonly BetGeneratorService $generatorService,
         private readonly ReActAgentService $reactAgentService,
+        private readonly StatisticalOptimizerService $statisticalOptimizer,
         private readonly LoggerInterface $logger
     ) {
         parent::__construct();
@@ -44,12 +46,17 @@ class LottoTuiCommand extends Command
     protected function configure(): void
     {
         $this->addOption('game', 'g', InputOption::VALUE_REQUIRED, 'Typ gry do analizy');
+        $this->addOption('pick', 'p', InputOption::VALUE_REQUIRED, 'Ile liczb ma wytypować agent w jednym zakładzie');
         $this->addOption('sessions', 's', InputOption::VALUE_REQUIRED, 'Ilość ostatnich losowań do pobrania statystyk');
+        $this->addOption('months', 'mo', InputOption::VALUE_REQUIRED, 'Z ilu ostatnich miesięcy pobrać statystyki');
         $this->addOption('bets', 'b', InputOption::VALUE_REQUIRED, 'Ile zakładów ma wygenerować system?');
         $this->addOption('strategy', 'st', InputOption::VALUE_REQUIRED, 'Strategia doboru liczb przez AI (balanced/aggressive)');
-        $this->addOption('pool-size', 'p', InputOption::VALUE_REQUIRED, 'Rozmiar puli liczb wybieranych przez AI');
+        $this->addOption('pool-size', 'ps', InputOption::VALUE_REQUIRED, 'Rozmiar puli liczb wybieranych przez AI');
         $this->addOption('pool-mode', 'pm', InputOption::VALUE_REQUIRED, 'Metoda doboru puli (AI/Manual)');
-        $this->addOption('mode', 'm', InputOption::VALUE_REQUIRED, 'Tryb pracy generatora (1-6)');
+        $this->addOption('mode', 'm', InputOption::VALUE_REQUIRED, 'Tryb pracy generatora (1-7)');
+        $this->addOption('neighbours', 'nb', InputOption::VALUE_NONE, 'Czy uwzględniać w analizie liczby sąsiadujące (+1/-1)?');
+        $this->addOption('bankers', 'bk', InputOption::VALUE_REQUIRED, 'Liczby bankierów oddzielone przecinkami/spacją (dla trybów 4 i 6)');
+        $this->addOption('weight', 'w', InputOption::VALUE_REQUIRED, 'Waga dla gorących liczb w generatorze ważonym (dla trybu 3)');
     }
 
     private function promptSelect(string $question, array $choices, ?string $default = null): string
@@ -134,13 +141,11 @@ class LottoTuiCommand extends Command
         }
         $game = $this->gameRegistryService->getGameConfig($gameType);
 
-        if ($gameType === 'MultiMulti') {
-            $poolSizeOpt = $input->getOption('pool-size');
-            if ($poolSizeOpt && is_numeric($poolSizeOpt) && (int)$poolSizeOpt >= 1 && (int)$poolSizeOpt <= 10) {
-                $pickSize = (int)$poolSizeOpt;
-            } else {
-                $pickSize = (int)$this->promptSelect('Ile liczb chcesz skreślać na jednym zakładzie (strategia Multi Multi)?', ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'], '10');
-            }
+        $pickOpt = $input->getOption('pick');
+        if ($pickOpt && is_numeric($pickOpt) && (int)$pickOpt >= 1) {
+            $game['pick'] = (int)$pickOpt;
+        } elseif ($gameType === 'MultiMulti') {
+            $pickSize = (int)$this->promptSelect('Ile liczb chcesz skreślać na jednym zakładzie (strategia Multi Multi)?', ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'], '10');
             $game['pick'] = $pickSize;
         }
 
@@ -155,17 +160,20 @@ class LottoTuiCommand extends Command
         }
 
         $strategyOpt = $input->getOption('strategy');
-        if ($strategyOpt && in_array(strtolower($strategyOpt), ['balanced', 'aggressive'], true)) {
+        if ($strategyOpt && in_array(strtolower($strategyOpt), ['syndicate', 'balanced', 'aggressive'], true)) {
             $aiStrategy = strtolower($strategyOpt);
         } else {
-            $aiStrategy = 'balanced';
+            $aiStrategy = 'syndicate';
             if ($poolMode === 'AI') {
                 $aiStrategy = $this->promptSelect('Wybierz strategię doboru liczb przez AI:', [
+                    'syndicate' => 'Syndykat Klastrowy (60% sąsiedzi, 20% powtórki wygranych, 20% uśpione)',
                     'balanced' => 'Zbalansowana (Klasyczna Hybryda, równowaga)',
                     'aggressive' => 'Ostra Gra (Łowca Trendów - maks. ryzyko na klastry i liczby gorące)',
-                ], 'aggressive');
+                ], 'syndicate');
             }
         }
+
+        $includeNeighbours = (bool)$input->getOption('neighbours');
 
         $fullPool = [];
 
@@ -202,7 +210,10 @@ class LottoTuiCommand extends Command
             $sessionsOpt = $input->getOption('sessions');
             $sessions = $sessionsOpt !== null && is_numeric($sessionsOpt) ? (int)$sessionsOpt : null;
 
-            $result = $this->reactAgentService->runAgentLoop($gameType, $poolSize, $aiStrategy, $onStepCallback, $sessions);
+            $monthsOpt = $input->getOption('months');
+            $months = $monthsOpt !== null && is_numeric($monthsOpt) ? (int)$monthsOpt : null;
+
+            $result = $this->reactAgentService->runAgentLoop($gameType, $poolSize, $aiStrategy, $onStepCallback, $sessions, $months, $includeNeighbours);
             $fullPool = $result['pool'] ?? $result['selected_pool'] ?? [];
             sort($fullPool);
 
@@ -224,7 +235,7 @@ class LottoTuiCommand extends Command
         }
 
         $modeOpt = $input->getOption('mode');
-        if ($modeOpt && in_array((string)$modeOpt, ['1', '2', '3', '4', '5', '6'], true)) {
+        if ($modeOpt && in_array((string)$modeOpt, ['1', '2', '3', '4', '5', '6', '7'], true)) {
             $mode = (string)$modeOpt;
         } else {
             $io->section("METODA PRACY (Generator)");
@@ -234,15 +245,43 @@ class LottoTuiCommand extends Command
                 '3' => '[3] GENERATOR WAŻONY (Statystyczny)',
                 '4' => '[4] SYSTEM HYBRYDOWY (Stali Bankierzy + Zmienne z Puli)',
                 '5' => '[5] SYSTEM FRAKTALNY (Zaawansowane bloki)',
-                '6' => '[6] SYSTEM ROZDZIELNY (Bankierzy Rotacyjni)',
+                '6' => '[6] SYSTEM ROZDZIELNY (Bankierzy RotACYJNI)',
+                '7' => '[7] OPTYMALIZACJA STATYSTYCZNA (Synergia Par/Trójek przy Rozwodnieniu)',
             ], '1');
         }
 
         $blocksToProcess = [];
+        $bankersOpt = $input->getOption('bankers');
+        $statsReport = null;
 
-        if ($mode === '6') {
+        if ($mode === '7') {
+            $io->text("OPTYMALIZACJA STATYSTYCZNA PRZY ROZWODNIENIU (Synergia Par i Trójek)");
+            $betsLimit = (int)($input->getOption('bets') ?: $this->promptInput('Ile zakładów wygenerować z puli (np. 100 lub 25)?', '100'));
+
+            $sessions = (int)($input->getOption('sessions') ?: 50);
+            $dateFrom = $this->gameRegistryService->calculateDateFromForSessions($gameType, $sessions);
+            $statsData = $this->lottoApiClient->getHotColdNumbers($gameType, $dateFrom);
+            $frequencies = $statsData['sorted_by_freq_desc'] ?? [];
+
+            $io->text("Uruchamianie algorytmu optymalizatora heurystycznego...");
+            $optResult = $this->statisticalOptimizer->optimizeBetsForDilution(
+                $fullPool,
+                $game['pick'],
+                $betsLimit,
+                $frequencies,
+                $game['from'] ?? 49
+            );
+
+            $blocksToProcess[] = ['type' => 'precalc', 'bets' => $optResult['bets']];
+            $statsReport = $optResult['report'];
+
+        } elseif ($mode === '6') {
             $io->text("SYSTEM ROZDZIELNY (BANKIERZY ROTACYJNI)");
-            $bankStr = $this->promptInput('Wpisz liczby BANKIERÓW z Puli (np. 8 sztuk):');
+            if ($bankersOpt) {
+                $bankStr = $bankersOpt;
+            } else {
+                $bankStr = $this->promptInput('Wpisz liczby BANKIERÓW z Puli (np. 8 sztuk):');
+            }
             preg_match_all('/\d+/', $bankStr, $matches);
             $bankersPool = array_unique(array_map('intval', $matches[0] ?? []));
             $bankersQty = (int)$this->promptInput('Ile z tych Bankierów ma być na każdym kuponie?', '3');
@@ -287,7 +326,11 @@ class LottoTuiCommand extends Command
 
         } elseif ($mode === '4') {
             $io->text("SYSTEM HYBRYDOWY (Stali Bankierzy)");
-            $bankStr = $this->promptInput('Wpisz stałych Bankierów (będą na każdym kuponie):');
+            if ($bankersOpt) {
+                $bankStr = $bankersOpt;
+            } else {
+                $bankStr = $this->promptInput('Wpisz stałych Bankierów (będą na każdym kuponie):');
+            }
             preg_match_all('/\d+/', $bankStr, $matches);
             $bankers = array_unique(array_map('intval', $matches[0] ?? []));
             $vars = array_diff($fullPool, $bankers);
@@ -300,7 +343,8 @@ class LottoTuiCommand extends Command
             $hotStr = $this->promptInput('Wpisz z Puli liczby GORĄCE (dostaną większą wagę):');
             preg_match_all('/\d+/', $hotStr, $matches);
             $hotNums = array_unique(array_map('intval', $matches[0] ?? []));
-            $weight = (int)$this->promptInput('Waga (2-10):', '5');
+            $weightOpt = $input->getOption('weight');
+            $weight = $weightOpt && is_numeric($weightOpt) ? (int)$weightOpt : (int)$this->promptInput('Waga (2-10):', '5');
 
             $urn = [];
             foreach ($fullPool as $n) {
@@ -383,6 +427,33 @@ class LottoTuiCommand extends Command
         }
         $io->table(['L.p.', 'Liczby'], $tableData);
 
+        // --- OKNO STATYSTYCZNE (Dla trybu 7 lub dużej puli) ---
+        if ($statsReport !== null) {
+            $io->section("📊 OKNO STATYSTYCZNE: PROFIL ZESTAWU I ROZWODNIENIE");
+
+            $dm = $statsReport['dilution_metrics'];
+            $io->table(
+                ['Metryka', 'Wartość'],
+                [
+                    ['Liczba liczb w Puli', count($fullPool)],
+                    ['Kombinacje w wybranej puli C(N, k)', number_format($dm['pool_combinations_total'], 0, ',', ' ')],
+                    ['Współczynnik Rozwodnienia', sprintf('%s (%s%%)', $dm['dilution_ratio_str'], $dm['dilution_factor_pct'])],
+                    ['Średnie użycie liczby', sprintf('%.2f razy', $dm['avg_repeats_per_number'])],
+                    ['Pokrycie unikalnych par', sprintf('%d z %d (%.1f%%)', $statsReport['unique_pairs_covered'], $statsReport['unique_pairs_total_in_pool'], $statsReport['pairs_coverage_pct'])],
+                ]
+            );
+
+            $bench = $statsReport['benchmark'];
+            $io->table(
+                ['Wskaźnik', 'Optymalizator', 'Losowy Baseline', 'Przewaga'],
+                [
+                    ['Średni Synergy Score', sprintf('%.1f', $bench['optimized_avg_synergy_score']), sprintf('%.1f', $bench['random_baseline_avg_score']), sprintf('+%.1f%%', $bench['synergy_advantage_percent'])],
+                    ['Zgodność z Gaussa (Sumy)', sprintf('%.1f%%', $bench['optimized_gaussian_adherence_pct']), sprintf('%.1f%%', $bench['random_gaussian_adherence_pct']), sprintf('+%.1f pp', $bench['optimized_gaussian_adherence_pct'] - $bench['random_gaussian_adherence_pct'])],
+                    ['Balans Parzystości', sprintf('%.1f%%', $bench['optimized_parity_balance_pct']), sprintf('%.1f%%', $bench['random_parity_balance_pct']), sprintf('+%.1f pp', $bench['optimized_parity_balance_pct'] - $bench['random_parity_balance_pct'])],
+                ]
+            );
+        }
+
         // --- WERYFIKATOR POKRYCIA ---
         $io->section("ANALIZA POKRYCIA (Macierz Gwarancji: Siatka Bezpieczeństwa)");
 
@@ -425,7 +496,7 @@ class LottoTuiCommand extends Command
                 $io->warning("Nie udało się przeprowadzić symulacji: " . $e->getMessage());
             }
         } else {
-            $io->warning("Pula jest zbyt duża (" . count($fullPool) . " liczb) na pełną symulację w pamięci RAM.");
+            $io->warning("Pula jest zbyt duża (" . count($fullPool) . " liczb) na pełną symulację kombinatoryczną w czasie rzeczywistym.");
         }
 
         return Command::SUCCESS;

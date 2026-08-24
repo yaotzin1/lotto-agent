@@ -1,3 +1,4 @@
+
 ###> symfony/framework-bundle ###
 /.env.local
 /.env.local.php
@@ -6,7 +7,5 @@
 /public/bundles/
 /var/
 /vendor/
-/node_modules/
-/.idea/
+/.phpunit.cache/
 ###< symfony/framework-bundle ###
-
