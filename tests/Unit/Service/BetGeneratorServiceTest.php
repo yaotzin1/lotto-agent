@@ -87,4 +87,17 @@ class BetGeneratorServiceTest extends TestCase
             $this->assertCount(6, $bet);
         }
     }
+
+    public function testGenerateRankedFullCoverageBets(): void
+    {
+        $pool = range(1, 42);
+        $frequencies = array_fill_keys($pool, 5);
+
+        $result = $this->service->generateRankedFullCoverageBets($pool, 5, 15, $frequencies, 42);
+
+        $this->assertArrayHasKey('bets', $result);
+        $this->assertArrayHasKey('report', $result);
+        $this->assertCount(15, $result['bets']);
+        $this->assertSame(42, $result['report']['unique_numbers_used']);
+    }
 }

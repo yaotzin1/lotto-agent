@@ -39,6 +39,7 @@ class LottoStatsCommand extends Command
         $this->addOption('bets', 'b', InputOption::VALUE_REQUIRED, 'Liczba zakładów do wygenerowania (np. 100 lub 25)');
         $this->addOption('sessions', 's', InputOption::VALUE_REQUIRED, 'Liczba ostatnich losowań do pobrania statystyk', '50');
         $this->addOption('months', 'mo', InputOption::VALUE_REQUIRED, 'Liczba miesięcy do pobrania statystyk');
+        $this->addOption('full-coverage', null, InputOption::VALUE_OPTIONAL, 'Wymuś 100% pokrycie puli wejściowej (true/false)', 'true');
         $this->addOption('ai', null, InputOption::VALUE_NONE, 'Dołącz strategiczną analizę i komentarz AI (Google Gemini)');
         $this->addOption('json-output', 'j', InputOption::VALUE_NONE, 'Zwróć wynik w formacie JSON');
     }
@@ -149,12 +150,16 @@ class LottoStatsCommand extends Command
             $io->text("Przetwarzanie statystyk, macierzy współwystępowania oraz optymalizacja heurystyczna...");
         }
 
+        $fullCoverageOpt = $input->getOption('full-coverage');
+        $fullCoverage = ($fullCoverageOpt === null || filter_var($fullCoverageOpt, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) !== false);
+
         $optimizationResult = $this->optimizerService->optimizeBetsForDilution(
             $fullPool,
             $pick,
             $betsCount,
             $frequencies,
-            $maxNumber
+            $maxNumber,
+            ['full_coverage' => $fullCoverage]
         );
 
         $bets = $optimizationResult['bets'];
@@ -241,12 +246,17 @@ class LottoStatsCommand extends Command
 
         // 1. Metryki Rozwodnienia
         $dm = $report['dilution_metrics'];
+        $covStatus = ($report['is_full_coverage_guaranteed'] ?? false)
+            ? '<fg=green;options=bold>[100% POKRYCIA PULI (Zero Drop)]</>'
+            : sprintf('<fg=yellow>[CZĘŚCIOWE: %d/%d liczb]</>', $report['unique_numbers_used'] ?? count($fullPool), count($fullPool));
+
         $io->section("1. Analiza Rozwodnienia i Przestrzeni Kombinatorycznej");
         $io->table(
             ['Metryka', 'Wartość'],
             [
                 ['Liczba liczb w Puli (N)', count($fullPool) . " (zakres 1-$maxNumber)"],
                 ['Liczba generowanych zakładów', $betsCount],
+                ['Pokrycie Puli Wejściowej', sprintf('%d z %d liczb (%.1f%%) %s', $report['unique_numbers_used'] ?? count($fullPool), count($fullPool), $report['pool_coverage_pct'] ?? 100.0, $covStatus)],
                 ['Kombinacje w wybranej puli C(N, k)', number_format($dm['pool_combinations_total'], 0, ',', ' ')],
                 ['Kombinacje w całej grze C(Max, k)', number_format($dm['full_lottery_combinations'], 0, ',', ' ')],
                 ['Współczynnik Rozwodnienia', sprintf('%s (%s%%)', $dm['dilution_ratio_str'], $dm['dilution_factor_pct'])],
@@ -332,24 +342,36 @@ class LottoStatsCommand extends Command
             $io->block($aiAnalysis, null, 'fg=white;bg=blue', ' ', true);
         }
 
-        // 7. Lista Wygenerowanych Zakładów
-        $io->section(sprintf("7. Wygenerowany Pakiet (%d Zakładów Zoptymalizowanych)", count($bets)));
+        // 7. Lista Wygenerowanych Zakładów (Ranking Synergii)
+        $io->section(sprintf("7. Wygenerowany Pakiet (%d Zakładów - Ranking Synergii)", count($bets)));
         $tableData = [];
         $pairMatrix = $this->optimizerService->buildPairAffinityMatrix($fullPool, $frequencies);
         $gaussParams = $this->optimizerService->calculateGaussianParameters($maxNumber, $pick);
 
         foreach ($bets as $i => $bet) {
             $fitness = $this->optimizerService->calculateBetFitness($bet, $pairMatrix, $frequencies, $gaussParams, $maxNumber);
+            $rankStr = '#' . ($i + 1);
+            if ($i === 0) {
+                $statusTag = '<fg=yellow;options=bold>[★ TOP SYNERGIA]</>';
+            } elseif ($i < 3) {
+                $statusTag = '<fg=cyan>[Mocna Synergia]</>';
+            } elseif ($fitness['is_gaussian_optimal']) {
+                $statusTag = '<fg=green>[Optimum Gaussa]</>';
+            } else {
+                $statusTag = '<fg=gray>[Pokrycie Puli]</>';
+            }
+
             $tableData[] = [
-                'Zakład ' . ($i + 1),
-                implode(', ', $bet),
+                $rankStr,
+                implode(', ', array_map(fn($n) => sprintf('%2d', $n), $bet)),
                 $fitness['sum'],
                 $fitness['parity_ratio'],
                 sprintf('%.1f', $fitness['total_score']),
+                $statusTag,
             ];
         }
 
-        $io->table(['L.p.', 'Liczby', 'Suma', 'Parz (N:P)', 'Synergy Score'], array_slice($tableData, 0, 30));
+        $io->table(['Ranking', 'Liczby', 'Suma', 'Parz (N:P)', 'Synergy Score', 'Profil / Status'], array_slice($tableData, 0, 30));
         if (count($tableData) > 30) {
             $io->note(sprintf("Wyświetlono pierwszych 30 z %d zakładów. Wszystkie zakłady zostały pomyślnie zoptymalizowane.", count($tableData)));
         }

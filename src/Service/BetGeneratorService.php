@@ -23,6 +23,19 @@ class BetGeneratorService
         $optimizer = $this->statisticalOptimizer ?? new StatisticalOptimizerService(new GameRegistryService(), new \Psr\Log\NullLogger());
         return $optimizer->optimizeBetsForDilution($pool, $pick, $limit, $frequencies, $maxNumber, $options);
     }
+
+    // === SILNIK RANKINGOWEGO PEŁNEGO POKRYCIA (ZERO-DROP GUARANTEE) ===
+    public function generateRankedFullCoverageBets(
+        array $pool,
+        int $pick,
+        int $limit,
+        array $frequencies,
+        int $maxNumber,
+        array $options = []
+    ): array {
+        $optimizer = $this->statisticalOptimizer ?? new StatisticalOptimizerService(new GameRegistryService(), new \Psr\Log\NullLogger());
+        return $optimizer->optimizeBetsWithFullCoverage($pool, $pick, $limit, $frequencies, $maxNumber, $options);
+    }
     public function generateOverlappingBlocks(array $pool, int $numBlocks, int $blockSize): array
     {
         $poolCount = count($pool);

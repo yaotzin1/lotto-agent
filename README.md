@@ -100,7 +100,10 @@ docker compose run --rm app php bin/console app:lotto-agent --game=Lotto --strat
 | **[4]** | **SYSTEM HYBRYDOWY** | Fixed Bankers + variable pool reduction | High confidence core numbers |
 | **[5]** | **SYSTEM FRAKTALNY** | Multi-level rolling overlap with geometric interleaving | Syndicates & cluster cascades |
 | **[6]** | **SYSTEM ROZDZIELNY** | Rotational floating bankers with variable subsets | Multi-win leverage effect |
-| **[7]** | **OPTYMALIZACJA STATYSTYCZNA** | Affinity & Co-occurrence Optimizer with Gaussian filtering | Heavy dilution (e.g. 49 nos / 100 bets) |
+| **[7]** | **OPTYMALIZACJA STATYSTYCZNA** | Affinity & Co-occurrence Optimizer with Gaussian filtering | Heavy dilution (Hot numbers concentration) |
+| **[8]** | **RANKINGOWE PEŁNE POKRYCIE** | Zero-Drop Guarantee (100% pool coverage) + Pair Affinity + Ranked Output | Full pool partitioning (e.g. 42 nos in 15 bets) |
+
+👉 **Szczegółowy podręcznik gracza i komendy dla każdego trybu znajdziesz w: [docs/HOW_TO_PLAY.md](docs/HOW_TO_PLAY.md)**
 
 ---
 

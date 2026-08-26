@@ -112,13 +112,14 @@ Gdy gracz wybiera bardzo duży zbiór liczb (np. $N = 49$ dla Lotto lub $N = 30$
 
 ## 6. Podsumowanie i Rekomendowany Workflow
 
-1. **Analiza Dużej Puli i Rozwodnienia (np. 49 liczb / 100 gier):**
+1. **Analiza Dużej Puli i Rozwodnienia (np. 49 liczb / 100 gier lub 42 liczby / 15 gier):**
    ```bash
-   docker compose run --rm app php bin/console app:lotto-stats --game=Lotto --pool=all --bets=100
+   # Gwarantowane pełne pokrycie 100% puli i ranking synergii:
+   docker compose run --rm app php bin/console app:lotto-stats --game=MiniLotto --pool=all --bets=15
    ```
-2. **Uruchomienie Generatora z Optymalizacją Statystyczną:**
+2. **Uruchomienie Generatora z Pełnym Pokryciem i Rankingiem (Tryb 8):**
    ```bash
-   docker compose run --rm app php bin/console app:lotto-generator --game=Lotto --pool-mode=Manual --mode=7 --bets=100
+   docker compose run --rm app php bin/console app:lotto-generator --game=MiniLotto --pool-mode=Manual --mode=8 --bets=15
    ```
 3. **Interaktywny Tryb TUI:**
    ```bash
@@ -128,4 +129,17 @@ Gdy gracz wybiera bardzo duży zbiór liczb (np. $N = 49$ dla Lotto lub $N = 30$
    ```bash
    docker compose run --rm app php bin/console app:lotto-agent --game=Lotto --strategy=syndicate --sessions=15
    ```
+
+---
+
+## 7. Tryb [8] Rankingowe Pełne Pokrycie Synergiczne (Zero-Drop Guarantee)
+
+### Zasada działania dwufazowego:
+1. **Faza 1 – Partytywne Pokrycie Puli (Zero-Drop):**
+   * Dla puli $N$ liczb (np. 42 w Mini Lotto) i formatu $k$ (5 liczb na zakład), algorytm wyznacza liczbę zakładów bazowych $B_{base} = \lceil N / k \rceil = 9$.
+   * Algorytm heurystycznego klastrowania rozkłada 100% liczb na 9 zakładów tak, by połączyć liczby o najwyższym wzajemnym współwystępowaniu (Pair Affinity) i zgodności z dzwonem Gaussa.
+2. **Faza 2 – Doładowanie Top-Synergii:**
+   * Pozostałe sloty (np. zakłady 10–15) wypełniane są kombinacjami najsilniejszych liczb gorących i klastrów sąsiedzkich.
+3. **Faza 3 – Sortowanie Rankingowe (Fitness Score):**
+   * Wszystkie wygenerowane zakłady są sortowane malejąco według wskaźnika *Fitness Score*, prezentując graczowi przejrzysty ranking od kuponu #1 [★ Top Synergia] po zakłady domykające pulę.
 
