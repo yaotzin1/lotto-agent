@@ -147,4 +147,87 @@ class StatisticalOptimizerServiceTest extends TestCase
         $this->assertArrayHasKey('optimized_gaussian_adherence_pct', $bench);
         $this->assertArrayHasKey('random_gaussian_adherence_pct', $bench);
     }
+
+    public function testFullCoverageForMiniLotto15BetsUsesAll42Numbers(): void
+    {
+        $pool = range(1, 42);
+        $frequencies = [];
+        foreach ($pool as $num) {
+            $frequencies[$num] = rand(2, 14);
+        }
+
+        $result = $this->service->optimizeBetsWithFullCoverage(
+            $pool,
+            5,
+            15,
+            $frequencies,
+            42
+        );
+
+        $bets = $result['bets'];
+        $report = $result['report'];
+
+        $this->assertCount(15, $bets);
+        $this->assertSame(42, $report['unique_numbers_used']);
+        $this->assertTrue($report['is_full_coverage_guaranteed']);
+        $this->assertEquals(100.0, $report['pool_coverage_pct']);
+
+        $usageCounts = array_fill_keys($pool, 0);
+        foreach ($bets as $bet) {
+            $this->assertCount(5, $bet);
+            foreach ($bet as $n) {
+                $usageCounts[$n]++;
+            }
+        }
+
+        foreach ($usageCounts as $num => $count) {
+            $this->assertGreaterThan(0, $count, "Liczba $num powinna wystąpić przynajmniej 1 raz w 15 zakładach");
+        }
+    }
+
+    public function testRankedOrderDescBySynergyScore(): void
+    {
+        $pool = range(1, 42);
+        $frequencies = array_fill_keys($pool, 5);
+        $frequencies[10] = 20;
+        $frequencies[25] = 18;
+
+        $result = $this->service->optimizeBetsWithFullCoverage(
+            $pool,
+            5,
+            15,
+            $frequencies,
+            42
+        );
+
+        $rankedBets = $result['report']['ranked_bets'] ?? [];
+        $this->assertCount(15, $rankedBets);
+
+        for ($i = 0; $i < count($rankedBets) - 1; $i++) {
+            $score1 = $rankedBets[$i]['fitness']['total_score'];
+            $score2 = $rankedBets[$i + 1]['fitness']['total_score'];
+            $this->assertGreaterThanOrEqual($score2, $score1, "Zakłady powinny być posortowane malejąco według Fitness Score");
+        }
+    }
+
+    public function testFullCoverageForLotto49Numbers25Bets(): void
+    {
+        $pool = range(1, 49);
+        $frequencies = array_fill_keys($pool, 8);
+        $frequencies[7] = 25;
+        $frequencies[13] = 22;
+
+        $result = $this->service->optimizeBetsWithFullCoverage(
+            $pool,
+            6,
+            25,
+            $frequencies,
+            49
+        );
+
+        $this->assertCount(25, $result['bets']);
+        $this->assertSame(49, $result['report']['unique_numbers_used']);
+        $this->assertTrue($result['report']['is_full_coverage_guaranteed']);
+        $this->assertEquals(100.0, $result['report']['pool_coverage_pct']);
+    }
 }

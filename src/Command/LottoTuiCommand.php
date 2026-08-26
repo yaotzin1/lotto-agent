@@ -53,7 +53,7 @@ class LottoTuiCommand extends Command
         $this->addOption('strategy', 'st', InputOption::VALUE_REQUIRED, 'Strategia doboru liczb przez AI (balanced/aggressive)');
         $this->addOption('pool-size', 'ps', InputOption::VALUE_REQUIRED, 'Rozmiar puli liczb wybieranych przez AI');
         $this->addOption('pool-mode', 'pm', InputOption::VALUE_REQUIRED, 'Metoda doboru puli (AI/Manual)');
-        $this->addOption('mode', 'm', InputOption::VALUE_REQUIRED, 'Tryb pracy generatora (1-7)');
+        $this->addOption('mode', 'm', InputOption::VALUE_REQUIRED, 'Tryb pracy generatora (1-8)');
         $this->addOption('neighbours', 'nb', InputOption::VALUE_NONE, 'Czy uwzględniać w analizie liczby sąsiadujące (+1/-1)?');
         $this->addOption('bankers', 'bk', InputOption::VALUE_REQUIRED, 'Liczby bankierów oddzielone przecinkami/spacją (dla trybów 4 i 6)');
         $this->addOption('weight', 'w', InputOption::VALUE_REQUIRED, 'Waga dla gorących liczb w generatorze ważonym (dla trybu 3)');
@@ -246,15 +246,38 @@ class LottoTuiCommand extends Command
                 '4' => '[4] SYSTEM HYBRYDOWY (Stali Bankierzy + Zmienne z Puli)',
                 '5' => '[5] SYSTEM FRAKTALNY (Zaawansowane bloki)',
                 '6' => '[6] SYSTEM ROZDZIELNY (Bankierzy RotACYJNI)',
-                '7' => '[7] OPTYMALIZACJA STATYSTYCZNA (Synergia Par/Trójek przy Rozwodnieniu)',
-            ], '1');
+                '7' => '[7] OPTYMALIZACJA STATYSTYCZNA (Synergia Par/Trójek - Tryb Hot)',
+                '8' => '[8] RANKINGOWE PEŁNE POKRYCIE (Synergia Par + Gwarancja 100% Puli)',
+            ], '8');
         }
 
         $blocksToProcess = [];
         $bankersOpt = $input->getOption('bankers');
         $statsReport = null;
 
-        if ($mode === '7') {
+        if ($mode === '8') {
+            $io->text("RANKINGOWE PEŁNE POKRYCIE (Synergia Par + Gwarancja 100% Puli)");
+            $defaultBets = count($fullPool) >= 40 ? 15 : 10;
+            $betsLimit = (int)($input->getOption('bets') ?: $this->promptInput(sprintf('Ile zakładów wygenerować z puli %d liczb?', count($fullPool)), (string)$defaultBets));
+
+            $sessions = (int)($input->getOption('sessions') ?: 50);
+            $dateFrom = $this->gameRegistryService->calculateDateFromForSessions($gameType, $sessions);
+            $statsData = $this->lottoApiClient->getHotColdNumbers($gameType, $dateFrom);
+            $frequencies = $statsData['sorted_by_freq_desc'] ?? [];
+
+            $io->text("Uruchamianie algorytmu pełnego pokrycia partytywnego i optymalizacji synergii...");
+            $optResult = $this->statisticalOptimizer->optimizeBetsWithFullCoverage(
+                $fullPool,
+                $game['pick'],
+                $betsLimit,
+                $frequencies,
+                $game['from'] ?? 49
+            );
+
+            $blocksToProcess[] = ['type' => 'precalc', 'bets' => $optResult['bets']];
+            $statsReport = $optResult['report'];
+
+        } elseif ($mode === '7') {
             $io->text("OPTYMALIZACJA STATYSTYCZNA PRZY ROZWODNIENIU (Synergia Par i Trójek)");
             $betsLimit = (int)($input->getOption('bets') ?: $this->promptInput('Ile zakładów wygenerować z puli (np. 100 lub 25)?', '100'));
 
@@ -422,20 +445,52 @@ class LottoTuiCommand extends Command
         $io->success("Wygenerowano " . count($allFinalBets) . " zakładów!");
 
         $tableData = [];
-        foreach ($allFinalBets as $i => $bet) {
-            $tableData[] = ['Zakład ' . ($i + 1), implode(', ', $bet)];
-        }
-        $io->table(['L.p.', 'Liczby'], $tableData);
+        if ($statsReport !== null && isset($statsReport['ranked_bets'])) {
+            foreach ($statsReport['ranked_bets'] as $i => $item) {
+                $bet = $item['bet'];
+                $fit = $item['fitness'];
+                $rankStr = '#' . ($i + 1);
+                if ($i === 0) {
+                    $statusTag = '<fg=yellow;options=bold>[★ TOP SYNERGIA]</>';
+                } elseif ($i < 3) {
+                    $statusTag = '<fg=cyan>[Mocna Synergia]</>';
+                } elseif ($fit['is_gaussian_optimal']) {
+                    $statusTag = '<fg=green>[Optimum Gaussa]</>';
+                } else {
+                    $statusTag = '<fg=gray>[Pokrycie Puli]</>';
+                }
 
-        // --- OKNO STATYSTYCZNE (Dla trybu 7 lub dużej puli) ---
+                $tableData[] = [
+                    $rankStr,
+                    implode(', ', array_map(fn($n) => sprintf('%2d', $n), $bet)),
+                    $fit['sum'],
+                    $fit['parity_ratio'],
+                    sprintf('%.1f', $fit['total_score']),
+                    $statusTag,
+                ];
+            }
+            $io->table(['Ranking', 'Liczby', 'Suma', 'Parz (N:P)', 'Synergy Score', 'Profil / Status'], array_slice($tableData, 0, 30));
+        } else {
+            foreach ($allFinalBets as $i => $bet) {
+                $tableData[] = ['Zakład ' . ($i + 1), implode(', ', $bet)];
+            }
+            $io->table(['L.p.', 'Liczby'], $tableData);
+        }
+
+        // --- OKNO STATYSTYCZNE (Dla trybu 7, 8 lub dużej puli) ---
         if ($statsReport !== null) {
             $io->section("📊 OKNO STATYSTYCZNE: PROFIL ZESTAWU I ROZWODNIENIE");
 
             $dm = $statsReport['dilution_metrics'];
+            $covStatus = ($statsReport['is_full_coverage_guaranteed'] ?? false)
+                ? '<fg=green;options=bold>[100% POKRYCIA PULI (Zero Drop)]</>'
+                : sprintf('<fg=yellow>[CZĘŚCIOWE: %d/%d liczb]</>', $statsReport['unique_numbers_used'] ?? count($fullPool), count($fullPool));
+
             $io->table(
                 ['Metryka', 'Wartość'],
                 [
                     ['Liczba liczb w Puli', count($fullPool)],
+                    ['Pokrycie Puli Wejściowej', sprintf('%d z %d liczb (%.1f%%) %s', $statsReport['unique_numbers_used'] ?? count($fullPool), count($fullPool), $statsReport['pool_coverage_pct'] ?? 100.0, $covStatus)],
                     ['Kombinacje w wybranej puli C(N, k)', number_format($dm['pool_combinations_total'], 0, ',', ' ')],
                     ['Współczynnik Rozwodnienia', sprintf('%s (%s%%)', $dm['dilution_ratio_str'], $dm['dilution_factor_pct'])],
                     ['Średnie użycie liczby', sprintf('%.2f razy', $dm['avg_repeats_per_number'])],
