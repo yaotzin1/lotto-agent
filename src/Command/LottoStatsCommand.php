@@ -39,6 +39,8 @@ class LottoStatsCommand extends Command
         $this->addOption('game', 'g', InputOption::VALUE_REQUIRED, 'Typ gry (np. MiniLotto, Lotto, EuroJackpot, MultiMulti)');
         $this->addOption('pool', 'p', InputOption::VALUE_REQUIRED, 'Pula liczb (np. "1-42", "all", "1,5,10,15,20,25,30")');
         $this->addOption('bets', 'b', InputOption::VALUE_REQUIRED, 'Liczba zakładów do wygenerowania (np. 100 lub 25)');
+        $this->addOption('pick', null, InputOption::VALUE_REQUIRED, 'Ile liczb skreślać na kuponie (tylko MultiMulti i Keno)');
+        $this->addOption('max-rows', null, InputOption::VALUE_REQUIRED, 'Ogranicz liczbę wierszy w tabeli wyników (domyślnie: wszystkie)');
         $this->addOption('sessions', 's', InputOption::VALUE_REQUIRED, 'Liczba ostatnich losowań do pobrania statystyk', '50');
         $this->addOption('months', 'mo', InputOption::VALUE_REQUIRED, 'Liczba miesięcy do pobrania statystyk');
         $this->addOption('full-coverage', null, InputOption::VALUE_OPTIONAL, 'Wymuś 100% pokrycie puli wejściowej (true/false)', 'true');
@@ -69,9 +71,20 @@ class LottoStatsCommand extends Command
         $maxNumber = $gameConfig['from'] ?? 49;
         $pick = $gameConfig['pick'] ?? 6;
 
-        if ($gameType === 'MultiMulti' && !$input->getOption('pool')) {
-            $pickSize = (int)$io->choice('Ile liczb chcesz skreślać na jednym zakładzie (Multi Multi)?', ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'], '10');
-            $pick = $pickSize;
+        if ($this->gameRegistryService->isVariablePick($gameType)) {
+            $range = $this->gameRegistryService->getPickRange($gameType);
+            $pickOpt = $input->getOption('pick');
+
+            if ($pickOpt !== null && is_numeric($pickOpt)) {
+                $pick = $this->gameRegistryService->resolvePick($gameType, (int) $pickOpt);
+            } elseif ($input->isInteractive() && !$isJson) {
+                $choices = array_map('strval', range($range['min'], $range['max']));
+                $pick = (int) $io->choice(
+                    sprintf('Ile liczb skreślać na jednym zakładzie (%s: %d-%d)?', $gameType, $range['min'], $range['max']),
+                    $choices,
+                    (string) $range['default']
+                );
+            }
         }
 
         $sessions = (int)($input->getOption('sessions') ?: 50);
@@ -417,9 +430,15 @@ class LottoStatsCommand extends Command
             ];
         }
 
-        $io->table(['Ranking', 'Liczby', 'Suma', 'Parz (N:P)', 'Synergy Score', 'Profil / Status'], array_slice($tableData, 0, 30));
-        if (count($tableData) > 30) {
-            $io->note(sprintf("Wyświetlono pierwszych 30 z %d zakładów. Wszystkie zakłady zostały pomyślnie zoptymalizowane.", count($tableData)));
+        $maxRows = (int) ($input->getOption('max-rows') ?: 0);
+        $visible = ($maxRows > 0 && count($tableData) > $maxRows) ? array_slice($tableData, 0, $maxRows) : $tableData;
+        $io->table(['Ranking', 'Liczby', 'Suma', 'Parz (N:P)', 'Synergy Score', 'Profil / Status'], $visible);
+        if (count($visible) < count($tableData)) {
+            $io->note(sprintf(
+                'Wyświetlono %d z %d zakładów (limit --max-rows). Uruchom bez --max-rows, aby zobaczyć wszystkie.',
+                count($visible),
+                count($tableData)
+            ));
         }
 
         $io->success(sprintf(

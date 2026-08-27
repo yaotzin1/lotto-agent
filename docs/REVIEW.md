@@ -715,9 +715,13 @@ reads as generated placeholder text rather than documentation.
 `HOW_TO_PLAY.md` quotes **1,50 zł** for Mini Lotto; the current price is 1,25 zł (worth confirming
 against Totalizator's tariff before the next release, since every cost figure in the budget matrix is
 derived from it). Lotto at 3,00 zł and EuroJackpot at 12,50 zł are correct. Separately,
-`GameRegistryService` gives `Keno` a fixed `pick => 10, from => 70` — Keno is a variable-pick game
-drawn from 80, so that entry looks wrong; `MultiMulti`'s `pick => 10` is a maximum, not a fixed value,
-and only `LottoGeneratorCommand` special-cases it.
+`GameRegistryService` gives `Keno` and `MultiMulti` a fixed `pick`, while both are variable-pick
+games (the player chooses 1-10 numbers).
+
+> **KOREKTA (runda 3):** twierdzenie, że wpis `Keno` (`from => 70`) jest błędny, było
+> **nieuzasadnione**. Weryfikacja wobec LOTTO OpenAPI potwierdziła, że wszystkie wartości
+> `from` i `extra_from` w rejestrze są poprawne, łącznie z Keno = 70. Realnym problemem
+> była wyłącznie stała liczba skreśleń — naprawione, patrz REVIEW_ROUND2.md, runda 3.
 
 ---
 

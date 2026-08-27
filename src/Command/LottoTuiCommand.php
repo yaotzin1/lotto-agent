@@ -14,6 +14,7 @@ use App\Service\BetPipelineService;
 use App\Service\ExtraNumbersGenerator;
 use App\Service\HistoricalDataProvider;
 use App\Service\StatisticalOptimizerService;
+use App\Service\StatsWindowRenderer;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
@@ -44,6 +45,7 @@ class LottoTuiCommand extends Command
         private readonly HistoricalDataProvider $historicalDataProvider,
         private readonly ExtraNumbersGenerator $extraNumbersGenerator,
         private readonly BetPipelineService $betPipeline,
+        private readonly StatsWindowRenderer $statsWindowRenderer,
         private readonly LoggerInterface $logger
     ) {
         parent::__construct();
@@ -61,6 +63,7 @@ class LottoTuiCommand extends Command
         $this->addOption('pool-size', 'ps', InputOption::VALUE_REQUIRED, 'Rozmiar puli liczb wybieranych przez AI');
         $this->addOption('pool-mode', 'pm', InputOption::VALUE_REQUIRED, 'Metoda doboru puli (AI/Manual)');
         $this->addOption('pool', null, InputOption::VALUE_REQUIRED, 'Pula liczb dla trybu Manual (np. "all" albo "1,5,12,18")');
+        $this->addOption('max-rows', null, InputOption::VALUE_REQUIRED, 'Ogranicz liczbę wierszy w tabeli wyników (domyślnie: wszystkie)');
         $this->addOption('bankers-per-bet', null, InputOption::VALUE_REQUIRED, 'Tryb 6: ilu bankierów na jednym kuponie');
         $this->addOption('l1-size', null, InputOption::VALUE_REQUIRED, 'Tryb 5: rozmiar bloku L1');
         $this->addOption('l1-count', null, InputOption::VALUE_REQUIRED, 'Tryb 5: liczba bloków L1');
@@ -157,12 +160,23 @@ class LottoTuiCommand extends Command
         }
         $game = $this->gameRegistryService->getGameConfig($gameType);
 
-        $pickOpt = $input->getOption('pick');
-        if ($pickOpt && is_numeric($pickOpt) && (int)$pickOpt >= 1) {
-            $game['pick'] = (int)$pickOpt;
-        } elseif ($gameType === 'MultiMulti') {
-            $pickSize = (int)$this->promptSelect('Ile liczb chcesz skreślać na jednym zakładzie (strategia Multi Multi)?', ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'], '10');
-            $game['pick'] = $pickSize;
+        // Liczba skreśleń pochodzi z rejestru; --pick działa TYLKO tam, gdzie gra
+        // faktycznie na to pozwala (wcześniej przyjmowano dowolną wartość >= 1
+        // nawet dla gier o stałej liczbie skreśleń, np. --pick=3 dla Lotto).
+        if ($this->gameRegistryService->isVariablePick($gameType)) {
+            $range = $this->gameRegistryService->getPickRange($gameType);
+            $pickOpt = $input->getOption('pick');
+
+            if ($pickOpt !== null && is_numeric($pickOpt)) {
+                $game['pick'] = $this->gameRegistryService->resolvePick($gameType, (int) $pickOpt);
+            } elseif ($input->isInteractive()) {
+                $choices = array_map('strval', range($range['min'], $range['max']));
+                $game['pick'] = (int) $this->promptSelect(
+                    sprintf('Ile liczb skreślać na jednym zakładzie (%s: %d-%d)?', $gameType, $range['min'], $range['max']),
+                    $choices,
+                    (string) $range['default']
+                );
+            }
         }
 
         $poolModeOpt = $input->getOption('pool-mode');
@@ -387,81 +401,16 @@ class LottoTuiCommand extends Command
             $io->warning($warning);
         }
 
-        $tableData = [];
-        if ($statsReport !== null && isset($statsReport['ranked_bets'])) {
-            foreach ($statsReport['ranked_bets'] as $i => $item) {
-                $bet = $item['bet'];
-                $fit = $item['fitness'];
-                $rankStr = '#' . ($i + 1);
-                if ($i === 0) {
-                    $statusTag = '<fg=yellow;options=bold>[★ TOP SYNERGIA]</>';
-                } elseif ($i < 3) {
-                    $statusTag = '<fg=cyan>[Mocna Synergia]</>';
-                } elseif ($fit['is_gaussian_optimal']) {
-                    $statusTag = '<fg=green>[Optimum Gaussa]</>';
-                } else {
-                    $statusTag = '<fg=gray>[Pokrycie Puli]</>';
-                }
+        $this->statsWindowRenderer->renderBets(
+            $io,
+            $allFinalBets,
+            $extraSets,
+            $statsReport,
+            (int) ($input->getOption('max-rows') ?: StatsWindowRenderer::SHOW_ALL)
+        );
 
-                $row = [
-                    $rankStr,
-                    implode(', ', array_map(fn($n) => sprintf('%2d', $n), $bet)),
-                    $fit['sum'],
-                    $fit['parity_ratio'],
-                    sprintf('%.1f', $fit['total_score']),
-                    $statusTag,
-                ];
-                if ($extraSets !== []) {
-                    array_splice($row, 2, 0, [implode(', ', $extraSets[$i] ?? [])]);
-                }
-                $tableData[] = $row;
-            }
-            $headers = ['Ranking', 'Liczby', 'Suma', 'Parz (N:P)', 'Synergy Score', 'Profil / Status'];
-            if ($extraSets !== []) {
-                array_splice($headers, 2, 0, ['Dodatkowe']);
-            }
-            $io->table($headers, array_slice($tableData, 0, 30));
-        } else {
-            foreach ($allFinalBets as $i => $bet) {
-                $row = ['Zakład ' . ($i + 1), implode(', ', $bet)];
-                if ($extraSets !== []) {
-                    $row[] = implode(', ', $extraSets[$i] ?? []);
-                }
-                $tableData[] = $row;
-            }
-            $io->table($extraSets !== [] ? ['L.p.', 'Liczby', 'Dodatkowe'] : ['L.p.', 'Liczby'], $tableData);
-        }
-
-        // --- OKNO STATYSTYCZNE (Dla trybu 7, 8 lub dużej puli) ---
         if ($statsReport !== null) {
-            $io->section("📊 OKNO STATYSTYCZNE: PROFIL ZESTAWU I ROZWODNIENIE");
-
-            $dm = $statsReport['dilution_metrics'];
-            $covStatus = ($statsReport['is_full_coverage_guaranteed'] ?? false)
-                ? '<fg=green;options=bold>[100% POKRYCIA PULI (Zero Drop)]</>'
-                : sprintf('<fg=yellow>[CZĘŚCIOWE: %d/%d liczb]</>', $statsReport['unique_numbers_used'] ?? count($fullPool), count($fullPool));
-
-            $io->table(
-                ['Metryka', 'Wartość'],
-                [
-                    ['Liczba liczb w Puli', count($fullPool)],
-                    ['Pokrycie Puli Wejściowej', sprintf('%d z %d liczb (%.1f%%) %s', $statsReport['unique_numbers_used'] ?? count($fullPool), count($fullPool), $statsReport['pool_coverage_pct'] ?? 100.0, $covStatus)],
-                    ['Kombinacje w wybranej puli C(N, k)', number_format($dm['pool_combinations_total'], 0, ',', ' ')],
-                    ['Współczynnik Rozwodnienia', sprintf('%s (%s%%)', $dm['dilution_ratio_str'], $dm['dilution_factor_pct'])],
-                    ['Średnie użycie liczby', sprintf('%.2f razy', $dm['avg_repeats_per_number'])],
-                    ['Pokrycie unikalnych par', sprintf('%d z %d (%.1f%%)', $statsReport['unique_pairs_covered'], $statsReport['unique_pairs_total_in_pool'], $statsReport['pairs_coverage_pct'])],
-                ]
-            );
-
-            $bench = $statsReport['benchmark'];
-            $io->table(
-                ['Wskaźnik', 'Optymalizator', 'Losowy Baseline', 'Przewaga'],
-                [
-                    ['Średni Synergy Score', sprintf('%.1f', $bench['optimized_avg_synergy_score']), sprintf('%.1f', $bench['random_baseline_avg_score']), sprintf('%+.1f%%', $bench['synergy_advantage_percent'])],
-                    ['Zgodność z Gaussa (Sumy)', sprintf('%.1f%%', $bench['optimized_gaussian_adherence_pct']), sprintf('%.1f%%', $bench['random_gaussian_adherence_pct']), sprintf('%+.1f pp', $bench['optimized_gaussian_adherence_pct'] - $bench['random_gaussian_adherence_pct'])],
-                    ['Balans Parzystości', sprintf('%.1f%%', $bench['optimized_parity_balance_pct']), sprintf('%.1f%%', $bench['random_parity_balance_pct']), sprintf('%+.1f pp', $bench['optimized_parity_balance_pct'] - $bench['random_parity_balance_pct'])],
-                ]
-            );
+            $this->statsWindowRenderer->renderStatsWindow($io, $statsReport, count($fullPool));
         }
 
         // --- WERYFIKATOR POKRYCIA ---
