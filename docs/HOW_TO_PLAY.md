@@ -125,12 +125,18 @@ php bin/console app:lotto-generator --game=EuroJackpot --pool-mode=AI --strategy
 ### Multi Multi (1–10/80)
 * **Przestrzeń kombinacji:** Losowanych jest 20 kul z 80. Gracz wybiera skreślenie od 1 do 10 liczb.
 * **Strategia Optymalna (Kombinatoryczna):**
+  * ⚠️ Liczbę skreśleń ustawia opcja **`--pick`**, a `--pool-size` odnosi się wyłącznie do
+    wielkości puli wybieranej przez AI. Wcześniej obie role pełniła jedna opcja, przez co
+    `--pool-size=6` dawało pulę równą liczbie skreśleń — czyli 30 identycznych kuponów.
   * **Gra na 4–6 liczb (Wysoka wygrywalność):** Najwyższe matematyczne ROI przy regularnych trafieniach 4/4 i 5/5.
   * **Gra na 10 liczb (Atak na Jackpot):** Wymaga strategii klastrowej w oparciu o [Tryb 7] lub [Tryb 8].
 
 ```bash
-# Multi Multi (Skreślanie 6 liczb, 30 zakładów, pełna analiza):
-php bin/console app:lotto-generator --game=MultiMulti --pool-size=6 --mode=8 --bets=30
+# Multi Multi (skreślanie 6 liczb, 30 zakładów, pula z całego bębna 80 liczb):
+php bin/console app:lotto-generator --game=MultiMulti --pool-mode=Manual --pool=all --pick=6 --mode=8 --bets=30
+
+# Keno działa tak samo (1-10 skreśleń):
+php bin/console app:lotto-generator --game=Keno --pool-mode=Manual --pool=all --pick=4 --mode=8 --bets=20
 ```
 
 ---

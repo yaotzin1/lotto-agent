@@ -143,3 +143,86 @@ Pierwsze uruchomienie dla nowej gry pobiera do 25 dat. Pełne 50–100 losowań
 zbierze się po kilku uruchomieniach albo po wywołaniu komendy kilka razy —
 to świadomy kompromis wymuszony limitem 429. Cache jest trwały, więc koszt
 ponosi się raz.
+
+---
+
+## 🔧 Runda 3 (2026-08-27): A7, C9, StatsWindowRenderer
+
+Domknięcie trzech ostatnich pozycji otwartych. **66 testów, 3415 asercji, zielone.**
+
+### A7 — `evaluate_distribution` przestało być tautologiczne
+
+Stara wersja liczyła sumę podzbioru jako `poolAverage * pick`, czyli **dokładnie
+średnią rozkładu**. Dla każdej symetrycznej puli wynik zawsze wypadał „optymalnie".
+Margines był arbitralny (`pickCount * 6`) i niezgodny z sigma liczonym w optymalizatorze.
+
+Teraz narzędzie liczy **rozkład sumy losowego podzbioru z podanej puli** (średnia
+ORAZ odchylenie, z poprawką na populację skończoną) i raportuje, **jaka część losowych
+zakładów z tej puli trafi w prawdopodobny przedział sumy**. Przedział pochodzi
+z `calculateGaussianParameters()` — jedno źródło prawdy.
+
+Przypadek, który obnaża starą wersję:
+
+| Pula | Średnia sumy | Sigma | % w normie |
+|---|---|---|---|
+| pełny bęben 1-49 | 150,0 | 32,79 | **82,0%** |
+| skrajna 1-8 + 42-49 | **150,0** | 41,26 | **71,4%** |
+| tylko niskie 1-20 | 63,0 | 12,12 | 0% |
+| tylko wysokie 30-49 | 237,0 | 12,12 | 0% |
+
+Pula skrajna ma **identyczną średnią** jak pełny bęben, więc stara wersja uznałaby ją
+za optymalną. Nowa pokazuje, że jest wyraźnie gorsza. Dochodzi też `verdict`,
+`empty_decades` i `decade_limit_blocks_generation`.
+
+### C9 — gry o zmiennej liczbie skreśleń
+
+**Parametry gier zweryfikowano wobec LOTTO OpenAPI** (zakres liczb zwracanych przez
+`numbers-frequency`). Wynik: **wszystkie wartości `from` i `extra_from` w rejestrze były
+poprawne**, łącznie z `Keno` 70 — wcześniejsza sugestia w tym dokumencie, że wpis Keno
+„wygląda na błędny", była nieuzasadniona i zostaje wycofana.
+
+Realny problem był węższy: `pick` był stały dla **Multi Multi** i **Keno**, gdzie gracz
+sam wybiera 1-10 liczb. Rejestr ma teraz `pick_min` / `pick_max` oraz
+`isVariablePick()`, `getPickRange()`, `resolvePick()`.
+
+Warunek `if ($gameType === 'MultiMulti')` zniknął z trzech komend — obsługa jest
+generyczna. Dodano opcję `--pick`, która działa **wyłącznie** tam, gdzie gra na to
+pozwala:
+
+```
+MultiMulti --pick=6 -> kupon 6 liczb
+MultiMulti --pick=3 -> kupon 3 liczb
+Keno       --pick=5 -> kupon 5 liczb
+Lotto      --pick=3 -> kupon 6 liczb   (zignorowane, zasady gry wygrywają)
+```
+
+> Uwaga: `--pool-size` **nie służy już** do ustawiania liczby skreśleń. Wcześniej ta sama
+> opcja oznaczała jednocześnie „ile skreśleń" i „jak duża pula", przez co
+> `--pool-size=6` dawało pulę równą liczbie skreśleń, czyli jeden możliwy kupon.
+
+> `ZakladySpecjalne` nie zwraca danych z API (brak losowań w oknie) — wpis pozostaje,
+> ale nie da się go zweryfikować.
+
+### StatsWindowRenderer — ostatni duplikat wydzielony
+
+Bloki renderujące w `LottoGeneratorCommand` i `LottoTuiCommand` były **identyczne
+co do znaku** (79 linii, `diff` = 0 różnic).
+
+| Plik | Runda 2 | Runda 3 |
+|---|---|---|
+| `LottoGeneratorCommand.php` | 427 | **370** |
+| `LottoTuiCommand.php` | 509 | **455** |
+| Wspólne linie | 306 | **250** |
+
+Licząc od stanu wyjściowego: 613 → 370 i 753 → 455 linii.
+
+Przy okazji obie komendy **zyskały** to, co wcześniej miał tylko `app:lotto-stats`:
+źródło macierzy par (rzeczywiste współwystępowanie vs heurystyka) oraz uwagę
+metodologiczną o samozwrotności benchmarku.
+
+### Nadal otwarte
+
+| # | Status | Powód |
+|---|---|---|
+| **D1** | 🟨 | Rotacja kluczy po stronie właściciela. Historia Git została wyczyszczona (`git filter-repo`, force-push), ale GitHub trzyma stare obiekty do GC. |
+| **D5** | ⛔ | `phpunit` → `require-dev` niewykonalne: `composer update --lock` nie rozwiązuje drzewa (`symfony/*: 8.2.*` wskazuje na rozjechane gałęzie dev). |
