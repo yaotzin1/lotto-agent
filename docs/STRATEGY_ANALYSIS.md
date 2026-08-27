@@ -35,7 +35,7 @@ Strategia `syndicate` wdrożona w `lotto-agent` dzieli selekcję puli kandydują
 ```
 
 ### Filar 1: Sąsiedzi Matematyczni ($\pm 1$) – 60% puli
-* **Zjawisko:** W ponad **50% losowań Lotto** przynajmniej dwie z wylosowanych liczb są bezpośrednimi sąsiadami na bębnie (np. 14 i 15, 27 i 28). Wynika to z dynamiki zderzeń kul w komorze mieszającej.
+* **Zjawisko:** W części losowań dwie wylosowane liczby są bezpośrednimi sąsiadami. ⚠️ **To nie jest anomalia bębna** — dla 6 z 49 prawdopodobieństwo wystąpienia co najmniej jednej pary sąsiadów wynosi ok. **49%** wyłącznie z kombinatoryki, przy założeniu idealnie uczciwego losowania. Wyjaśnianie tego „dynamiką zderzeń kul” jest nieuprawnione: sąsiedztwo to cecha strukturalna kuponu, a nie przewaga predykcyjna.
 * **Działanie:** Narzędzie `fetch_neighbours_analysis` lokalizuje liczby wygrane z ostatnich losowań (kotwice) i wyznacza ich sąsiadów ($N-1$ oraz $N+1$). Sąsiedzi przylegający do więcej niż jednej wygranej liczby otrzymują najwyższy *Cluster Score*.
 
 ### Filar 2: Bezpośrednie Powtórki (*Repeat Numbers*) – 20% puli
@@ -98,12 +98,13 @@ Gdy gracz wybiera bardzo duży zbiór liczb (np. $N = 49$ dla Lotto lub $N = 30$
 ```
 
 1. **Warstwa Makro-Prawdopodobieństwa (Filtry Stochastyczne):**
-   * **Dzwon Gaussa Sumy:** Teoretyczna średnia sumy 6 liczb w Lotto wynosi $\mu = 150$, a odchylenie $\sigma \approx 32.8$. Ponad $80\%$ historycznych losowań mieści się w przedziale $[115, 185]$. Optymalizator odrzuca zakłady leżące w ogonach rozkładu.
+   * **Dzwon Gaussa Sumy:** $\mu = 150$, $\sigma \approx 32.79$. Optymalizator używa przedziału $\mu \pm 1.35\sigma = [106, 194]$ (ok. $82\%$ masy przy przybliżeniu normalnym). **Przedział jest wyliczany przez `calculateGaussianParameters()`, a nie wpisany na sztywno** — wcześniej dokumentacja podawała $[115,185]$ oraz $[125,175]$, czyli wartości niezgodne z kodem.
    * **Balans Parzystości:** $82\%$ losowań Lotto to układy $3:3$, $4:2$ lub $2:4$.
    * **Rozpiętość Dekadowa:** Wymuszenie pokrycia co najmniej 3 różnych dekad zapobiega nienaturalnym skupiskom.
 
 2. **Warstwa Mikro-Powiązań (Affinity Matrix & Anti-Cannibalization):**
-   * Tworzy symetryczną macierz powiązań $P(A, B)$ dla każdej pary z puli.
+   * Tworzy symetryczną macierz powiązań $P(A, B)$ dla każdej pary z puli — liczoną z **rzeczywistej historii losowań** (ile razy $A$ i $B$ padły w tym samym losowaniu), pobieranej przez `LottoApiClient::fetchDrawHistory()`.
+   * ⚠️ Gdy historia jest niedostępna (mniej niż 20 losowań), macierz degraduje się do heurystyki `sqrt(f(A)*f(B))`, która **nie zawiera żadnej informacji o parach**. Raport zawsze podaje, który z dwóch trybów zastosowano (`affinity_source`).
    * Dynamiczny algorytm marginalnego spadku użyteczności:
      $$\text{Score}(c) = 2 \cdot \text{Freq}(c) + 1.5 \sum_{s \in \text{Kupon}} \text{Affinity}(c, s) - 18 \cdot \text{Usage}(c) - 40 \sum_{s} \text{PairUsage}(c, s)$$
    * Zapewnia to równomierne zużycie wszystkich 49 liczb (średnio $\approx 12.24$ razy na liczbę w 100 kuponach), ale **każda liczba dobierana jest zawsze ze swoimi historycznie najmocniejszymi partnerami**.

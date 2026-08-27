@@ -55,8 +55,13 @@ class StatisticalOptimizerServiceTest extends TestCase
         $this->assertSame(150, $gauss['expected_sum']);
         $this->assertGreaterThan(30.0, $gauss['std_dev']);
         $this->assertLessThan(40.0, $gauss['std_dev']);
-        $this->assertLessThanOrEqual(115, $gauss['optimal_min']);
-        $this->assertGreaterThanOrEqual(185, $gauss['optimal_max']);
+        // Dokładne wartości wynikające ze wzoru Var = k(M+1)(M-k)/12.
+        // Wcześniejsze luźne granice (<=115 / >=185) przepuszczały rozjazd
+        // między kodem a dokumentacją (finding C1).
+        $this->assertEqualsWithDelta(32.79, $gauss['std_dev'], 0.01);
+        $this->assertSame(106, $gauss['optimal_min']);
+        $this->assertSame(194, $gauss['optimal_max']);
+        $this->assertSame('106 - 194', $gauss['optimal_range_str']);
     }
 
     public function testBuildPairAffinityMatrixSymmetryAndClusterBonus(): void
@@ -68,7 +73,19 @@ class StatisticalOptimizerServiceTest extends TestCase
 
         $this->assertSame(0, $matrix[5][5]);
         $this->assertSame($matrix[5][6], $matrix[6][5]);
-        $this->assertGreaterThan($matrix[5][12], $matrix[5][6]); // 5 and 6 are direct neighbours -> +35 cluster bonus
+
+        // Premia sąsiedztwa (+14) musi przebijać premię za rozstaw 3-12 (+8).
+        // Wcześniejszy komentarz mówił o "+35 cluster bonus", którego nigdy nie
+        // było w kodzie, a test przechodził tylko dlatego, że f(6) > f(12).
+        // Teraz sprawdzamy niezmiennik przy RÓWNYCH częstotliwościach.
+        $flatPool = [14, 15, 16, 18];
+        $flatFreq = array_fill_keys($flatPool, 10);
+        $flatMatrix = $this->service->buildPairAffinityMatrix($flatPool, $flatFreq);
+        $this->assertGreaterThan(
+            $flatMatrix[15][18],
+            $flatMatrix[15][16],
+            'Bezpośredni sąsiad musi mieć wyższe affinity niż liczba oddalona o 3'
+        );
     }
 
     public function testOptimizeBetsForDilutionGeneratesUniqueValidBets(): void

@@ -22,7 +22,7 @@ class SimulateCoverageTool implements LottoToolInterface
 
     public function getDescription(): string
     {
-        return 'Symuluje i oblicza gwarancje trafień (system skrócony / pełny) dla podanej puli liczb i zakładów.';
+        return 'Symuluje gwarancje trafień dla podanej puli i zakładów. WAŻNE: wynik jest WARUNKOWY - zakłada, że wszystkie wylosowane liczby leżą w podanej puli.';
     }
 
     public function getParametersSchema(): array
@@ -54,12 +54,12 @@ class SimulateCoverageTool implements LottoToolInterface
         $pool = $args['pool'] ?? [];
         $betsCount = isset($args['bets_count']) ? (int) $args['bets_count'] : 5;
 
-        if (empty($pool) || count($pool) < 6) {
-            return json_encode(['error' => 'Pula musi zawierać co najmniej 6 liczb']);
-        }
-
         $config = $this->gameRegistryService->getGameConfig($game);
         $pick = $config['pick'] ?? 6;
+
+        if (empty($pool) || count($pool) < $pick) {
+            return json_encode(['error' => sprintf('Pula musi zawierać co najmniej %d liczb', $pick)]);
+        }
 
         $bets = $this->betGeneratorService->generateBalancedShorthand($pool, $pick, $betsCount);
         $coverage = $this->betGeneratorService->calculateCoverage($pool, $bets, $pick);
@@ -70,6 +70,13 @@ class SimulateCoverageTool implements LottoToolInterface
             'bets_generated' => count($bets),
             'sample_bets' => array_slice($bets, 0, 3),
             'guarantees' => $coverage['guarantees'] ?? [],
+            // Bez tego pola model raportował gwarancje jako bezwarunkowe.
+            'assumption' => sprintf(
+                'UWAGA: gwarancje są WARUNKOWE. Zakładają, że wszystkie %d wylosowanych liczb '
+                . 'znajduje się w podanej puli %d liczb. Bezwarunkowa szansa jest znacznie niższa.',
+                $pick,
+                count($pool)
+            ),
         ]);
     }
 }

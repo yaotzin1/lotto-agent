@@ -36,8 +36,7 @@ class LottoAgentCommand extends Command
     protected function configure(): void
     {
         $this->addOption('game', 'g', InputOption::VALUE_REQUIRED, 'Typ gry do analizy');
-        $this->addOption('pick', 'p', InputOption::VALUE_REQUIRED, 'Ile liczb ma wytypować agent (np. dla systemu)?');
-        $this->addOption('bets', 'b', InputOption::VALUE_REQUIRED, 'Ile osobnych zakładów ma wygenerować agent?');
+        $this->addOption('pool-size', 'p', InputOption::VALUE_REQUIRED, 'Rozmiar puli kandydującej, którą ma wytypować agent');
         $this->addOption('months', 'm', InputOption::VALUE_REQUIRED, 'Z ilu ostatnich miesięcy pobrać statystyki?');
         $this->addOption('neighbours', null, InputOption::VALUE_NONE, 'Czy uwzględniać w analizie liczby sąsiadujące?');
         $this->addOption('sessions', 's', InputOption::VALUE_REQUIRED, 'Ilość ostatnich losowań do analizy (zamiast miesięcy)');
@@ -58,17 +57,14 @@ class LottoAgentCommand extends Command
             );
         }
 
-        $pickCount = $input->getOption('pick');
-        if (!$pickCount) {
-            $pickCount = $io->ask('Ile liczb ma wytypować agent w jednym zakładzie?', '6');
-        }
-        $pickCount = (int) $pickCount;
+        // Liczba skreśleń wynika z zasad gry, a nie z opcji CLI.
+        $gameConfig = $this->gameRegistryService->getGameConfig($gameType);
+        $pickCount = $gameConfig['pick'] ?? 6;
 
-        $betsCount = $input->getOption('bets');
-        if (!$betsCount) {
-            $betsCount = $io->ask('Ile osobnych zakładów wygenerować?', '1');
-        }
-        $betsCount = (int) $betsCount;
+        $poolSizeOpt = $input->getOption('pool-size');
+        $poolSize = ($poolSizeOpt !== null && is_numeric($poolSizeOpt))
+            ? max($pickCount, (int) $poolSizeOpt)
+            : max($pickCount + 4, 12);
 
         $months = $input->getOption('months');
         $sessions = $input->getOption('sessions');
@@ -96,7 +92,7 @@ class LottoAgentCommand extends Command
             'months' => $months,
             'sessions' => $sessions,
             'pickCount' => $pickCount,
-            'betsCount' => $betsCount,
+            'poolSize' => $poolSize,
             'neighbours' => $includeNeighbours,
             'strategy' => $strategy,
             'json' => $isJson,
@@ -133,19 +129,34 @@ class LottoAgentCommand extends Command
                 }
             };
 
-            $poolSize = max($pickCount + 4, 12);
             $reactResult = $this->reActAgentService->runAgentLoop($gameType, $poolSize, $strategy, $onStepCallback, $sessions, $months, $includeNeighbours);
 
             $pool = $reactResult['pool'];
             $reasoning = $reactResult['reasoning'];
 
+            $isFallback = $reactResult['is_fallback'] ?? false;
+
             if ($isJson) {
                 $output->writeln(json_encode([
                     'game' => $gameType,
+                    'is_fallback' => $isFallback,
                     'reasoning' => $reasoning,
                     'candidate_pool' => $pool,
                     'agent_steps_count' => count($reactResult['steps']),
                 ], JSON_PRETTY_PRINT));
+            } elseif ($isFallback) {
+                $io->warning(
+                    "Agent nie zwrócił wyniku analizy — poniższa pula pochodzi z trybu awaryjnego.
+"
+                    . "Nie traktuj jej jako rekomendacji statystycznej."
+                );
+                $io->definitionList(
+                    ['Gra' => $gameType],
+                    ['Status' => 'TRYB AWARYJNY'],
+                    ['Uzasadnienie' => $reasoning],
+                    ['Pula Wejściowa' => implode(', ', $pool)],
+                    ['Wykonane Kroków Tool Call' => count($reactResult['steps'])]
+                );
             } else {
                 $io->success('Analiza ReAct Agent zakończona pomyślnie.');
                 $io->definitionList(
@@ -153,6 +164,11 @@ class LottoAgentCommand extends Command
                     ['Uzasadnienie Strategii' => $reasoning],
                     ['Pula Wejściowa' => implode(', ', $pool)],
                     ['Wykonane Kroków Tool Call' => count($reactResult['steps'])]
+                );
+                $io->note(
+                    "Ta komenda zwraca PULĘ KANDYDUJĄCĄ, a nie gotowe kupony.
+"
+                    . "Aby zamienić pulę na zakłady, użyj: app:lotto-generator --pool-mode=Manual"
                 );
             }
 

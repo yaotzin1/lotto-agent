@@ -1,13 +1,19 @@
 services:
   # Główny serwis naszego agenta
   app:
-    build: 
+    build:
       context: .
-      target: dev # Możemy zdefiniować etap deweloperski w Dockerfile
+      target: dev
     volumes:
       - .:/app
-      - /app/var 
+      # Nazwany wolumen zamiast anonimowego: historia losowań w var/draw-history
+      # MUSI przetrwać `docker compose run --rm`, inaczej każde uruchomienie
+      # pobierałoby ją od zera i natychmiast trafiało na HTTP 429.
+      - lotto_var:/app/var
     env_file:
       - .env.dev
-    tty: true # Pozwala na interakcję z terminalem
+    tty: true
     working_dir: /app
+
+volumes:
+  lotto_var:

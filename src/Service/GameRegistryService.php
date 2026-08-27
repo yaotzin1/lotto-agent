@@ -6,6 +6,9 @@ namespace App\Service;
 
 class GameRegistryService
 {
+    /** Górna granica cofania się w czasie przy liczeniu dat losowań. */
+    public const MAX_SESSIONS_LOOKBACK = 2000;
+
     private const GAMES_CONFIG = [
         'MiniLotto' => [
             'name' => 'MiniLotto',
@@ -129,6 +132,13 @@ class GameRegistryService
 
         $config = $this->getGameConfig($gameType);
         $drawDays = $config['draw_days'];
+
+        if ($drawDays === []) {
+            throw new \RuntimeException(sprintf('Gra "%s" nie ma zdefiniowanych dni losowań.', $gameType));
+        }
+
+        // Ogranicznik: bez niego --sessions=1000000 kręciło miliony iteracji.
+        $sessions = min($sessions, self::MAX_SESSIONS_LOOKBACK);
 
         $date = new \DateTime();
         $counted = 0;
