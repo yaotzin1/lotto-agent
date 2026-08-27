@@ -8,6 +8,9 @@ use Psr\Log\LoggerInterface;
 
 class StatisticalOptimizerService
 {
+    /** Poniżej tylu losowań statystyka par jest zbyt rzadka, by cokolwiek znaczyć. */
+    public const MIN_DRAWS_FOR_CO_OCCURRENCE = 20;
+
     public function __construct(
         private readonly GameRegistryService $gameRegistryService,
         private readonly LoggerInterface $logger
@@ -77,17 +80,142 @@ class StatisticalOptimizerService
         ];
     }
 
+    /** Macierz zbudowana z rzeczywistej historii losowań (prawdziwe współwystępowanie par). */
+    public const AFFINITY_SOURCE_CO_OCCURRENCE = 'historical_co_occurrence';
+
+    /** Macierz zastępcza, wyliczona wyłącznie z częstotliwości pojedynczych liczb. */
+    public const AFFINITY_SOURCE_FREQUENCY_HEURISTIC = 'frequency_heuristic';
+
+    /** Tryb użyty przy ostatnim wywołaniu buildPairAffinityMatrix(). */
+    private string $lastAffinitySource = self::AFFINITY_SOURCE_FREQUENCY_HEURISTIC;
+
+    /** Liczba losowań, z których policzono ostatnią macierz (0 = brak historii). */
+    private int $lastAffinityDrawCount = 0;
+
+    public function getLastAffinitySource(): string
+    {
+        return $this->lastAffinitySource;
+    }
+
+    public function getLastAffinityDrawCount(): int
+    {
+        return $this->lastAffinityDrawCount;
+    }
+
     /**
-     * Buduje macierz współwystępowania (affinity matrix) par liczb na podstawie częstości lub historii losowań.
+     * Największa możliwa liczba RÓŻNYCH kuponów z danej puli.
+     */
+    public function maxDistinctBets(int $poolSize, int $pick): float
+    {
+        return $this->calculateCombinationsCount($poolSize, $pick);
+    }
+
+    /**
+     * Pilnuje, by nie dało się zamówić więcej kuponów, niż istnieje kombinacji.
+     *
+     * Bez tego np. pula 6 liczb przy grze 6-liczbowej i --bets=30 dawała
+     * 30 IDENTYCZNYCH kuponów, a raport i tak chwalił się "100% pokrycia puli".
+     */
+    private function assertBetCountIsAchievable(int $poolSize, int $pick, int $numBets): void
+    {
+        if ($numBets < 1) {
+            throw new \InvalidArgumentException(
+                sprintf('Liczba zakładów musi być dodatnia, otrzymano %d.', $numBets)
+            );
+        }
+
+        $maxDistinct = $this->maxDistinctBets($poolSize, $pick);
+
+        if ($numBets > $maxDistinct) {
+            throw new \InvalidArgumentException(sprintf(
+                'Z puli %d liczb przy %d skreśleniach istnieje tylko %s różnych kuponów, '
+                . 'a zamówiono %d. Zwiększ pulę albo zmniejsz liczbę zakładów.',
+                $poolSize,
+                $pick,
+                number_format($maxDistinct, 0, ',', ' '),
+                $numBets
+            ));
+        }
+    }
+
+    /**
+     * Losuje kombinację, której NIE ma jeszcze w pakiecie.
+     *
+     * Poprzednio ścieżka awaryjna dokładała losowy kupon bez sprawdzania
+     * unikalności, przez co użytkownik płacił za powtórzone kupony.
+     *
+     * @param array<int> $pool
+     * @param array<int, array<int>> $existing
+     * @return array<int>|null
+     */
+    private function findUnusedCombination(array $pool, int $pick, array $existing): ?array
+    {
+        $seen = [];
+        foreach ($existing as $bet) {
+            $seen[implode('-', $bet)] = true;
+        }
+
+        for ($i = 0; $i < 2000; $i++) {
+            $backup = $pool;
+            shuffle($backup);
+            $candidate = array_slice($backup, 0, $pick);
+            sort($candidate);
+
+            if (!isset($seen[implode('-', $candidate)])) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Buduje macierz powiązań (affinity) par liczb.
+     *
+     * Są DWA różne tryby i różnią się one fundamentalnie wartością informacyjną:
+     *
+     *  1. AFFINITY_SOURCE_CO_OCCURRENCE — gdy podano historię losowań ($draws).
+     *     Liczone jest PRAWDZIWE współwystępowanie: ile razy para (A, B) padła
+     *     w tym samym losowaniu. To jest realna statystyka par.
+     *
+     *  2. AFFINITY_SOURCE_FREQUENCY_HEURISTIC — gdy historii brak.
+     *     Wynik to średnia geometryczna częstotliwości POJEDYNCZYCH liczb.
+     *     UWAGA: taka wartość nie zawiera ŻADNEJ informacji o parach — jest
+     *     monotoniczna względem f(A) i f(B), więc "najsilniejsza para" to po
+     *     prostu "dwie najgorętsze liczby". Tryb ten jest zachowany wyłącznie
+     *     jako awaryjny i MUSI być raportowany użytkownikowi jako heurystyka.
      *
      * @param array<int> $pool
      * @param array<int, int> $frequencies Mapa: [numer => liczba wystąpień]
+     * @param array<int, array<int>> $draws Historia losowań (każde jako lista liczb)
      * @return array<int, array<int, int>>
      */
-    public function buildPairAffinityMatrix(array $pool, array $frequencies): array
+    public function buildPairAffinityMatrix(array $pool, array $frequencies, array $draws = []): array
     {
-        $matrix = [];
+        $pool = array_values($pool);
         $count = count($pool);
+        $matrix = [];
+
+        $pairCounts = $this->countPairCoOccurrences($pool, $draws);
+        $useCoOccurrence = $pairCounts !== null;
+
+        $this->lastAffinitySource = $useCoOccurrence
+            ? self::AFFINITY_SOURCE_CO_OCCURRENCE
+            : self::AFFINITY_SOURCE_FREQUENCY_HEURISTIC;
+        $this->lastAffinityDrawCount = $useCoOccurrence ? count($draws) : 0;
+
+        // Skala normalizująca: utrzymuje rząd wielkości obu trybów porównywalny,
+        // żeby wagi w funkcji dopasowania nie wymagały przestrajania.
+        $scale = 1.0;
+        if ($useCoOccurrence) {
+            $maxPair = 0;
+            foreach ($pairCounts as $partners) {
+                foreach ($partners as $c) {
+                    $maxPair = max($maxPair, $c);
+                }
+            }
+            $scale = $maxPair > 0 ? (100.0 / $maxPair) : 1.0;
+        }
 
         for ($i = 0; $i < $count; $i++) {
             $n1 = $pool[$i];
@@ -98,26 +226,90 @@ class StatisticalOptimizerService
                     continue;
                 }
 
-                $f1 = $frequencies[$n1] ?? 1;
-                $f2 = $frequencies[$n2] ?? 1;
-
-                // Estymacja siły powiązania: średnia geometryczna frekwencji bazowych z historii
-                $baseScore = (int)round(sqrt($f1 * $f2) * 8);
-
-                // Umiarkowany bonus dla pojedynczej pary sąsiadów (+1/-1)
-                $diff = abs($n1 - $n2);
-                if ($diff === 1) {
-                    $baseScore += 8;
-                } elseif ($diff >= 3 && $diff <= 12) {
-                    // Bonus za optymalne rozproszenie harmoniczne (odstęp 3-12 liczb)
-                    $baseScore += 12;
+                if ($useCoOccurrence) {
+                    // Prawdziwe współwystępowanie: |{losowania zawierające A i B}|
+                    $baseScore = (int) round(($pairCounts[$n1][$n2] ?? 0) * $scale);
+                } else {
+                    $f1 = $frequencies[$n1] ?? 1;
+                    $f2 = $frequencies[$n2] ?? 1;
+                    // Heurystyka awaryjna — NIE jest to statystyka par (patrz docblock).
+                    $baseScore = (int) round(sqrt($f1 * $f2) * 8);
                 }
 
-                $matrix[$n1][$n2] = $baseScore;
+                $matrix[$n1][$n2] = $baseScore + $this->adjacencyBonus($n1, $n2);
             }
         }
 
         return $matrix;
+    }
+
+    /**
+     * Zlicza rzeczywiste współwystąpienia par w historii losowań.
+     *
+     * @param array<int> $pool
+     * @param array<int, array<int>> $draws
+     * @return array<int, array<int, int>>|null null, gdy historia jest bezużyteczna
+     */
+    private function countPairCoOccurrences(array $pool, array $draws): ?array
+    {
+        if (count($draws) < self::MIN_DRAWS_FOR_CO_OCCURRENCE) {
+            return null;
+        }
+
+        $inPool = array_fill_keys($pool, true);
+        $counts = [];
+        $observedPairs = 0;
+
+        foreach ($draws as $draw) {
+            if (!is_array($draw)) {
+                continue;
+            }
+
+            $relevant = [];
+            foreach ($draw as $n) {
+                $n = (int) $n;
+                if (isset($inPool[$n])) {
+                    $relevant[] = $n;
+                }
+            }
+            $relevant = array_values(array_unique($relevant));
+
+            $len = count($relevant);
+            for ($a = 0; $a < $len; $a++) {
+                for ($b = $a + 1; $b < $len; $b++) {
+                    $n1 = $relevant[$a];
+                    $n2 = $relevant[$b];
+                    $counts[$n1][$n2] = ($counts[$n1][$n2] ?? 0) + 1;
+                    $counts[$n2][$n1] = ($counts[$n2][$n1] ?? 0) + 1;
+                    $observedPairs++;
+                }
+            }
+        }
+
+        // Historia bez ani jednej pary z puli nie niesie informacji.
+        return $observedPairs > 0 ? $counts : null;
+    }
+
+    /**
+     * Premia strukturalna niezależna od źródła danych.
+     *
+     * Wcześniej sąsiad (+1/-1) dostawał +8, a liczba oddalona o 3-12 aż +12,
+     * co było sprzeczne ze strategią "syndykatu klastrowego" opisaną w docs/
+     * (60% puli to sąsiedzi). Premia sąsiedztwa jest teraz najwyższa.
+     */
+    private function adjacencyBonus(int $n1, int $n2): int
+    {
+        $diff = abs($n1 - $n2);
+
+        if ($diff === 1) {
+            return 14;
+        }
+
+        if ($diff >= 3 && $diff <= 12) {
+            return 8;
+        }
+
+        return 0;
     }
 
     /**
@@ -139,7 +331,11 @@ class StatisticalOptimizerService
         int $maxNumber,
         array $options = []
     ): array {
-        $fullCoverageRequested = $options['full_coverage'] ?? true;
+        // Domyślnie FALSE: to jest silnik KONCENTRACJI (Tryb 7).
+        // Wcześniej domyślne `true` powodowało, że Tryb 7 natychmiast delegował
+        // do Trybu 8 — oba tryby robiły dokładnie to samo, a cała gałąź poniżej
+        // była martwym kodem. Pełne pokrycie zamawia się teraz jawnie.
+        $fullCoverageRequested = $options['full_coverage'] ?? false;
         if ($fullCoverageRequested) {
             return $this->optimizeBetsWithFullCoverage($pool, $pick, $numBets, $frequencies, $maxNumber, $options);
         }
@@ -152,8 +348,11 @@ class StatisticalOptimizerService
             throw new \InvalidArgumentException("Pula ($poolSize) jest mniejsza niż wymagana ilość do skreślenia ($pick).");
         }
 
-        $pairMatrix = $this->buildPairAffinityMatrix($pool, $frequencies);
+        $this->assertBetCountIsAchievable($poolSize, $pick, $numBets);
+
+        $pairMatrix = $this->buildPairAffinityMatrix($pool, $frequencies, $options['draws'] ?? []);
         $gaussParams = $this->calculateGaussianParameters($maxNumber, $pick);
+        $maxPerDecade = $this->maxPerDecade($pick, $maxNumber);
 
         $usageCounts = array_fill_keys($pool, 0);
         $pairUsageCounts = [];
@@ -236,8 +435,8 @@ class StatisticalOptimizerService
                                 $decadeCount++;
                             }
                         }
-                        if ($decadeCount >= 2) {
-                            continue; // Nie więcej niż 2 liczby w tej samej dekadzie!
+                        if ($decadeCount >= $maxPerDecade) {
+                            continue; // Limit zagęszczenia dekadowego (skalowany do gry)
                         }
 
                         // --- FILTR 3: PROBABILITY & SYNERGY SCORING ---
@@ -345,10 +544,16 @@ class StatisticalOptimizerService
 
             // Jeśli po próbach nie znaleziono unikalnego, wygeneruj awaryjny realistyczny kupon
             if ($bestCandidateBet === null) {
-                $backup = $pool;
-                shuffle($backup);
-                $bestCandidateBet = array_slice($backup, 0, $pick);
-                sort($bestCandidateBet);
+                $bestCandidateBet = $this->findUnusedCombination($pool, $pick, $generatedBets);
+            }
+
+            // Brak jakiejkolwiek nowej kombinacji — kończymy zamiast dokładać duplikaty.
+            if ($bestCandidateBet === null) {
+                $this->logger->warning('Przerwano generowanie: brak dalszych unikalnych kombinacji.', [
+                    'generated' => count($generatedBets),
+                    'requested' => $numBets,
+                ]);
+                break;
             }
 
             $generatedBets[] = $bestCandidateBet;
@@ -402,7 +607,8 @@ class StatisticalOptimizerService
             $gaussParams,
             $maxNumber,
             $finalUsageCounts,
-            $finalPairUsageCounts
+            $finalPairUsageCounts,
+            $options['draws'] ?? []
         );
         $report['ranked_bets'] = $betsWithFitness;
 
@@ -439,8 +645,11 @@ class StatisticalOptimizerService
             throw new \InvalidArgumentException("Pula ($poolSize) jest mniejsza niż wymagana ilość do skreślenia ($pick).");
         }
 
-        $pairMatrix = $this->buildPairAffinityMatrix($pool, $frequencies);
+        $this->assertBetCountIsAchievable($poolSize, $pick, $numBets);
+
+        $pairMatrix = $this->buildPairAffinityMatrix($pool, $frequencies, $options['draws'] ?? []);
         $gaussParams = $this->calculateGaussianParameters($maxNumber, $pick);
+        $maxPerDecade = $this->maxPerDecade($pick, $maxNumber);
 
         // Liczba zakładów bazowych potrzebna do jednokrotnego pokrycia całej puli
         $baseBetsNeeded = (int)ceil($poolSize / $pick);
@@ -499,7 +708,7 @@ class StatisticalOptimizerService
                                 $decCount++;
                             }
                         }
-                        if ($decCount >= 2) {
+                        if ($decCount >= $maxPerDecade) {
                             continue;
                         }
 
@@ -635,7 +844,7 @@ class StatisticalOptimizerService
                         foreach ($currentBet as $cb) {
                             if ((int)floor(($cb - 1) / 10) === $candDecade) $decC++;
                         }
-                        if ($decC >= 2) continue;
+                        if ($decC >= $maxPerDecade) continue;
 
                         $fScore = ($frequencies[$candidate] ?? 1) * $wFreq;
                         $pairAff = 0;
@@ -701,10 +910,15 @@ class StatisticalOptimizerService
             }
 
             if ($bestCandidateBet === null) {
-                $backup = $pool;
-                shuffle($backup);
-                $bestCandidateBet = array_slice($backup, 0, $pick);
-                sort($bestCandidateBet);
+                $bestCandidateBet = $this->findUnusedCombination($pool, $pick, $generatedBets);
+            }
+
+            if ($bestCandidateBet === null) {
+                $this->logger->warning('Przerwano dopełnianie: brak dalszych unikalnych kombinacji.', [
+                    'generated' => count($generatedBets),
+                    'requested' => $numBets,
+                ]);
+                break;
             }
 
             $generatedBets[] = $bestCandidateBet;
@@ -757,7 +971,8 @@ class StatisticalOptimizerService
             $gaussParams,
             $maxNumber,
             $finalUsageCounts,
-            $finalPairUsageCounts
+            $finalPairUsageCounts,
+            $options['draws'] ?? []
         );
 
         $usedUniqueCount = count(array_filter($finalUsageCounts, fn($cnt) => $cnt > 0));
@@ -772,6 +987,54 @@ class StatisticalOptimizerService
             'bets' => $finalSortedBets,
             'report' => $report,
         ];
+    }
+
+    /**
+     * Czy podział parzyste/nieparzyste jest "naturalny" dla TEJ gry.
+     *
+     * Poprzedni warunek ($odds >= 2 && $evens >= 1 && $odds <= 4) był zapisany
+     * na sztywno pod pick = 5..6. Dla Multi Multi (pick = 10) odrzucał podział
+     * 5:5 — czyli najbardziej prawdopodobny — a nagradzał 4:6. Był też
+     * asymetryczny (dopuszczał 4:1, ale nie 1:4).
+     *
+     * Dla pick = 6 wynik jest identyczny jak wcześniej: {2:4, 3:3, 4:2}.
+     */
+    public function isParityBalanced(int $odds, int $evens, int $pick): bool
+    {
+        if ($pick < 2) {
+            return true;
+        }
+
+        if ($odds < 1 || $evens < 1) {
+            return false;
+        }
+
+        $tolerance = max(2, (int) ceil($pick / 3));
+
+        return abs($odds - $evens) <= $tolerance;
+    }
+
+    /**
+     * Maksymalna dopuszczalna liczba liczb w jednej dekadzie.
+     *
+     * Skalowana do gry: dla Kaskady (12 z 24) istnieją tylko 3 dekady, więc
+     * sztywny limit 2 czynił KAŻDY możliwy kupon nielegalnym.
+     */
+    public function maxPerDecade(int $pick, int $maxNumber): int
+    {
+        $decadesAvailable = max(1, (int) ceil($maxNumber / 10));
+
+        return max(2, (int) ceil($pick / $decadesAvailable));
+    }
+
+    /**
+     * Docelowe rozproszenie dekadowe — nigdy więcej niż liczba istniejących dekad.
+     */
+    public function targetDecadeSpread(int $pick, int $maxNumber): int
+    {
+        $decadesAvailable = max(1, (int) ceil($maxNumber / 10));
+
+        return min($decadesAvailable, $pick >= 6 ? 4 : 3);
     }
 
     /**
@@ -828,10 +1091,10 @@ class StatisticalOptimizerService
             $freqTotal += ($frequencies[$num] ?? 1);
         }
 
-        // 4. Parzyste / Nieparzyste
+        // 4. Parzyste / Nieparzyste (progi skalowane do liczby skreśleń)
         $odds = count(array_filter($bet, fn($n) => $n % 2 !== 0));
         $evens = $pick - $odds;
-        $isParityBalanced = ($odds >= 2 && $evens >= 1 && $odds <= 4);
+        $isParityBalanced = $this->isParityBalanced($odds, $evens, $pick);
         $parityBonus = $isParityBalanced ? 30 : -40;
 
         // 5. Dzwon Gaussa sumy
@@ -846,11 +1109,11 @@ class StatisticalOptimizerService
         }
         $decadeSpread = count($decades);
         $maxInSingleDecade = !empty($decades) ? max($decades) : 0;
-        
+
         $decadeBonus = 0;
-        if ($maxInSingleDecade >= 3) {
-            $decadeBonus = -150; // kara za stłoczenie 3+ liczb w jednej dekadzie
-        } elseif ($decadeSpread >= ($pick >= 6 ? 4 : 3)) {
+        if ($maxInSingleDecade > $this->maxPerDecade($pick, $maxNumber)) {
+            $decadeBonus = -150; // kara za stłoczenie liczb w jednej dekadzie
+        } elseif ($decadeSpread >= $this->targetDecadeSpread($pick, $maxNumber)) {
             $decadeBonus = 30; // bonus za naturalne rozproszenie
         }
 
@@ -879,10 +1142,16 @@ class StatisticalOptimizerService
         array $optimizedBets,
         array $frequencies,
         int $maxNumber,
-        int $simulations = 50
+        int $simulations = 50,
+        array $draws = []
     ): array {
         $gaussParams = $this->calculateGaussianParameters($maxNumber, $pick);
-        $pairMatrix = $this->buildPairAffinityMatrix($pool, $frequencies);
+        // Zachowaj informację o źródle macierzy — benchmark nie może jej nadpisać.
+        $sourceBefore = $this->lastAffinitySource;
+        $drawsBefore = $this->lastAffinityDrawCount;
+        $pairMatrix = $this->buildPairAffinityMatrix($pool, $frequencies, $draws);
+        $this->lastAffinitySource = $sourceBefore;
+        $this->lastAffinityDrawCount = $drawsBefore;
 
         $optCount = count($optimizedBets);
 
@@ -937,6 +1206,13 @@ class StatisticalOptimizerService
         $advantagePct = $randAvgScore > 0 ? round((($optAvgScore - $randAvgScore) / $randAvgScore) * 100, 1) : 0.0;
 
         return [
+            // UWAGA METODOLOGICZNA: baseline losowy jest oceniany TĄ SAMĄ funkcją
+            // celu, którą optymalizator maksymalizuje. Wynik mówi więc wyłącznie
+            // "optymalizator zoptymalizował własną funkcję celu" i NIE jest
+            // miarą szansy na wygraną ani oczekiwanego zwrotu.
+            'metric_is_self_referential' => true,
+            'disclaimer' => 'Wskaźnik porównuje zestawy tą samą funkcją oceny, którą optymalizator '
+                . 'maksymalizuje. Nie jest to miara prawdopodobieństwa wygranej ani zwrotu z gry.',
             'optimized_avg_synergy_score' => round($optAvgScore, 1),
             'random_baseline_avg_score' => round($randAvgScore, 1),
             'synergy_advantage_percent' => $advantagePct,
@@ -1031,14 +1307,15 @@ class StatisticalOptimizerService
         array $gaussParams,
         int $maxNumber,
         array $usageCounts,
-        array $pairUsageCounts
+        array $pairUsageCounts,
+        array $draws = []
     ): array {
         $pick = count($bets[0] ?? []);
         $numBets = count($bets);
 
         $dilutionMetrics = $this->calculateDilutionMetrics($pool, $pick, $numBets, $maxNumber);
         $gaussianHistogram = $this->generateAsciiGaussianHistogram($bets, $gaussParams, $maxNumber);
-        $benchmark = $this->benchmarkAgainstRandom($pool, $pick, $bets, $frequencies, $maxNumber);
+        $benchmark = $this->benchmarkAgainstRandom($pool, $pick, $bets, $frequencies, $maxNumber, 50, $draws);
 
         // Top 10 par o najwyższym Affinity w wygenerowanych kuponach
         $topPairs = [];
@@ -1085,6 +1362,9 @@ class StatisticalOptimizerService
             'dilution_metrics' => $dilutionMetrics,
             'gaussian_analysis' => $gaussianHistogram,
             'benchmark' => $benchmark,
+            'affinity_source' => $this->lastAffinitySource,
+            'affinity_draws_used' => $this->lastAffinityDrawCount,
+            'affinity_is_real_co_occurrence' => $this->lastAffinitySource === self::AFFINITY_SOURCE_CO_OCCURRENCE,
             'top_pairs' => $top10Pairs,
             'parity_summary' => $paritySummary,
             'unique_pairs_covered' => $uniquePairsCovered,

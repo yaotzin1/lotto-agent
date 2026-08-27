@@ -40,7 +40,7 @@ class GeminiApiClient
         for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
             try {
                 $response = $this->httpClient->request('GET', self::MODELS_API_URL, [
-                    'query' => ['key' => trim($this->geminiApiKey)],
+                    'headers' => ['x-goog-api-key' => trim($this->geminiApiKey)],
                 ]);
                 $data = $response->toArray();
                 break;
@@ -72,11 +72,9 @@ class GeminiApiClient
 
             try {
                 $response = $this->httpClient->request('POST', $apiUrl, [
-                    'query' => ['key' => trim($this->geminiApiKey)],
+                    'headers' => ['x-goog-api-key' => trim($this->geminiApiKey)],
                     'json' => $payload,
                     'timeout' => $timeoutSeconds,
-                    'verify_peer' => false,
-                    'verify_host' => false,
                 ]);
 
                 $resArray = $response->toArray();
@@ -162,11 +160,9 @@ class GeminiApiClient
 
             try {
                 $response = $this->httpClient->request('POST', $apiUrl, [
-                    'query' => ['key' => trim($this->geminiApiKey)],
+                    'headers' => ['x-goog-api-key' => trim($this->geminiApiKey)],
                     'json' => $payload,
                     'timeout' => $timeoutSeconds,
-                    'verify_peer' => false,
-                    'verify_host' => false,
                 ]);
 
                 $resArray = $response->toArray();
@@ -210,7 +206,8 @@ class GeminiApiClient
         string $hotStr,
         string $coldStr,
         int $poolSize,
-        string $strategy = 'balanced'
+        string $strategy = 'balanced',
+        int $maxNumber = 0
     ): array {
         $basePrompt = "Jesteś Głównym Analitykiem Danych w profesjonalnym syndykacie loteryjnym. 
 Twoim jedynym zadaniem jest wyselekcjonowanie optymalnej puli wejściowej DOKŁADNIE $poolSize unikalnych liczb dla gry $gameType.
@@ -250,7 +247,14 @@ Przykład poprawnej odpowiedzi: 2, 7, 12, 14, 28, 33, 41";
         preg_match_all('/\d+/', $aiText, $matches);
         $numbers = array_map('intval', $matches[0] ?? []);
 
-        return array_unique(array_slice($numbers, 0, $poolSize));
+        // Kolejność ma znaczenie: najpierw filtr zakresu i deduplikacja, POTEM
+        // przycięcie. Odwrotna kolejność (slice -> unique) zwracała mniej liczb
+        // niż zamówiono, gdy model powtórzył którąś liczbę.
+        if ($maxNumber > 0) {
+            $numbers = array_filter($numbers, static fn(int $n): bool => $n >= 1 && $n <= $maxNumber);
+        }
+
+        return array_values(array_slice(array_values(array_unique($numbers)), 0, $poolSize));
     }
 
     public function askForRecommendation(
@@ -276,7 +280,7 @@ DANE WEJŚCIOWE:
 WYTYCZNE STRATEGICZNE:
 1. Hybryda: Zbuduj zakłady opierając się na miksie liczb gorących (utrzymanie trendu) i zimnych (powrót do średniej).
 2. Wariancja: Unikaj trywialnych ciągów (np. 1, 2, 3, 4, 5).{$neighbourInstruction}
-4. Kompresja: Staraj się użyć możliwie najmniejszej puli UNIKALNYCH liczb do zbudowania wszystkich $betsCount zakładów (maksymalizuj powtarzanie się tych samych liczb na różnych kuponach).";
+3. Pokrycie: Rozłóż liczby tak, aby pakiet zakładów obejmował możliwie SZEROKI wycinek puli. Nie zawężaj się do kilku powtarzanych liczb — im więcej różnych liczb w pakiecie, tym większa szansa, że wylosowane liczby w ogóle w nim wystąpią.";
 
         if ($isJson) {
             $systemPrompt .= "\n\nFORMAT ODPOWIEDZI: WYŁĄCZNIE poprawny obiekt JSON. Zero dodatkowego tekstu.

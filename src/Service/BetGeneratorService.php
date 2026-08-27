@@ -36,18 +36,61 @@ class BetGeneratorService
         $optimizer = $this->statisticalOptimizer ?? new StatisticalOptimizerService(new GameRegistryService(), new \Psr\Log\NullLogger());
         return $optimizer->optimizeBetsWithFullCoverage($pool, $pick, $limit, $frequencies, $maxNumber, $options);
     }
-    public function generateOverlappingBlocks(array $pool, int $numBlocks, int $blockSize): array
+    /**
+     * Zwraca krok faktycznie względnie pierwszy z rozmiarem puli.
+     *
+     * Poprzednia wersja zgadywała (3, potem 5, potem 7) i dla puli podzielnej
+     * przez 3, 5 i 7 (np. 105) zwracała krok NIE będący względnie pierwszym.
+     */
+    private function coprimeStride(int $poolCount): int
     {
-        $poolCount = count($pool);
+        if ($poolCount <= 2) {
+            return 1;
+        }
 
-        // Geometric Interleaving: wybieramy krok (stride) względnie pierwszy z wielkością puli
-        $stride = 3;
-        if ($poolCount % 3 === 0) {
-            $stride = 5;
-            if ($poolCount % 5 === 0) {
-                $stride = 7;
+        foreach ([3, 5, 7, 11, 13, 17, 19, 23] as $candidate) {
+            if ($candidate < $poolCount && $this->gcd($candidate, $poolCount) === 1) {
+                return $candidate;
             }
         }
+
+        return 1;
+    }
+
+    private function gcd(int $a, int $b): int
+    {
+        while ($b !== 0) {
+            [$a, $b] = [$b, $a % $b];
+        }
+
+        return abs($a);
+    }
+
+    public function generateOverlappingBlocks(array $pool, int $numBlocks, int $blockSize): array
+    {
+        $pool = array_values(array_unique($pool));
+        $poolCount = count($pool);
+
+        if ($poolCount === 0) {
+            throw new \InvalidArgumentException('Pula wejściowa bloku jest pusta.');
+        }
+
+        // Blok nie może być większy niż pula — inaczej indeksowanie modulo zawijało
+        // się i produkowało blok z powtórzonymi liczbami (kupon niegrywalny).
+        if ($blockSize > $poolCount) {
+            throw new \InvalidArgumentException(sprintf(
+                'Rozmiar bloku (%d) nie może przekraczać wielkości puli (%d).',
+                $blockSize,
+                $poolCount
+            ));
+        }
+
+        if ($blockSize < 1 || $numBlocks < 1) {
+            throw new \InvalidArgumentException('Rozmiar bloku i liczba bloków muszą być dodatnie.');
+        }
+
+        // Geometric Interleaving: wybieramy krok (stride) względnie pierwszy z wielkością puli
+        $stride = $this->coprimeStride($poolCount);
 
         $interleavedPool = [];
         $visited = array_fill(0, $poolCount, false);
@@ -147,7 +190,24 @@ class BetGeneratorService
     public function generateBalancedShorthand(array $pool, int $pick, int $limit): array
     {
         $pool = array_values(array_unique($pool));
-        if (count($pool) <= $pick) {
+
+        if ($pick < 1) {
+            throw new \InvalidArgumentException(
+                sprintf('Liczba skreśleń musi być dodatnia, otrzymano %d.', $pick)
+            );
+        }
+
+        // Wcześniej zwracana była tu pula "jak leci", co dawało kupon krótszy niż
+        // wymaga gra (np. 3 liczby dla Lotto 6/49) — czyli kupon niegrywalny.
+        if (count($pool) < $pick) {
+            throw new \InvalidArgumentException(sprintf(
+                'Pula (%d liczb) jest mniejsza niż wymagana ilość skreśleń (%d).',
+                count($pool),
+                $pick
+            ));
+        }
+
+        if (count($pool) === $pick) {
             return [$pool];
         }
 
@@ -299,6 +359,9 @@ class BetGeneratorService
     public function generateCombinations(array $elements, int $length): \Generator
     {
         $count = count($elements);
+        if ($length < 1 || $length > $count) {
+            return;
+        }
         if ($length === 1) {
             foreach ($elements as $element) {
                 yield [$element];

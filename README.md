@@ -10,7 +10,7 @@ A Symfony 8 CLI & TUI application containerized with Docker, designed as an AI l
 4. **Statistical Dashboard & Dilution Optimizer (`app:lotto-stats` / Mode 7)**:
    - Solves the problem of **heavy dilution (rozwodnienie)** when picking large pools (e.g. 49 numbers into 100 bets or 30 numbers into 25 bets).
    - Assembles combinations around highest historical pair/triplet affinities.
-   - Enforces macro-statistical plausibility: Gaussian sum bell curve ($115-185$ for 6/49), parity balance ($3:3, 4:2, 2:4$), and decade spread.
+   - Enforces macro-statistical plausibility: Gaussian sum bell curve ($106-194$ for 6/49, i.e. $\mu \pm 1.35\sigma$ with $\sigma = 32.79$), parity balance ($3:3, 4:2, 2:4$), and decade spread.
    - Dynamic marginal decay (anti-cannibalization) ensures even pool coverage while maximizing internal coupon synergy.
    - Generates interactive **Okno Statystyczne** (ASCII Gaussian distribution chart, co-occurrence matrix, dilution metrics, and Monte Carlo quality benchmark).
 
@@ -25,8 +25,8 @@ $$P = \frac{1}{\binom{49}{6}} = \frac{1}{13\,983\,816} \approx 7.15 \times 10^{-
 When selecting a large pool (e.g. all 49 numbers) and generating a limited budget of bets (e.g. 100 bets = $0.000715\%$ of total space):
 * **Random selection / naive reduction** generates arbitrary combinations with strange sum distributions (e.g. sum $< 90$ or $> 220$), poor parity, and random pairs that historically had near-zero synergy.
 * **The Statistical Optimizer operates on two levels:**
-  1. **Macro-Plausibility (Stochastic Filtering)**: Over $80\%$ of all real-world lottery winning draws fall within the Gaussian interval $\mu \pm 1.35\sigma$ ($115-185$ in Lotto), have balanced odd/even splits ($3:3$ or $4:2$), and span across at least $3$ decades. The optimizer ensures $100\%$ of generated bets adhere to these proven macro-characteristics.
-  2. **Micro-Synergy (Historical Co-occurrence & Affinity)**: Instead of arbitrary pairing, numbers are assembled using a dynamic affinity matrix ($P(A, B)$ co-occurrence + cluster proximity bonuses). Dynamic usage penalties ensure the entire 49-number pool is evenly represented without sacrificing pair synergy.
+  1. **Macro-Plausibility (Stochastic Filtering)**: Roughly $82\%$ of the probability mass of the sum distribution lies within $\mu \pm 1.35\sigma$ ($106-194$ in Lotto). The interval is computed by `calculateGaussianParameters()` and is never hardcoded, have balanced odd/even splits ($3:3$ or $4:2$), and span across at least $3$ decades. The optimizer ensures $100\%$ of generated bets adhere to these proven macro-characteristics.
+  2. **Micro-Synergy (Historical Co-occurrence & Affinity)**: numbers are assembled using a pair matrix built from **actual draw history** - how often $A$ and $B$ were genuinely drawn together - fetched via `LottoApiClient::fetchDrawHistory()`. When fewer than 20 draws are available the matrix falls back to a frequency heuristic that carries **no pair information at all**, and every report states which of the two modes produced it (`affinity_source`). Dynamic usage penalties ensure the entire 49-number pool is evenly represented without sacrificing pair synergy.
 
 ---
 

@@ -9,3 +9,10 @@
 /vendor/
 /.phpunit.cache/
 ###< symfony/framework-bundle ###
+
+###> project secrets ###
+/.env
+/.env.dev
+/.env.prod
+!/.env.dev.example
+###< project secrets ###

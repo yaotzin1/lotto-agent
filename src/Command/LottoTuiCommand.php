@@ -9,6 +9,10 @@ use App\Service\GameRegistryService;
 use App\Service\GeminiApiClient;
 use App\Service\LottoApiClient;
 use App\Service\ReActAgentService;
+use App\Service\BetPipelineRequest;
+use App\Service\BetPipelineService;
+use App\Service\ExtraNumbersGenerator;
+use App\Service\HistoricalDataProvider;
 use App\Service\StatisticalOptimizerService;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -37,6 +41,9 @@ class LottoTuiCommand extends Command
         private readonly BetGeneratorService $generatorService,
         private readonly ReActAgentService $reactAgentService,
         private readonly StatisticalOptimizerService $statisticalOptimizer,
+        private readonly HistoricalDataProvider $historicalDataProvider,
+        private readonly ExtraNumbersGenerator $extraNumbersGenerator,
+        private readonly BetPipelineService $betPipeline,
         private readonly LoggerInterface $logger
     ) {
         parent::__construct();
@@ -53,6 +60,15 @@ class LottoTuiCommand extends Command
         $this->addOption('strategy', 'st', InputOption::VALUE_REQUIRED, 'Strategia doboru liczb przez AI (balanced/aggressive)');
         $this->addOption('pool-size', 'ps', InputOption::VALUE_REQUIRED, 'Rozmiar puli liczb wybieranych przez AI');
         $this->addOption('pool-mode', 'pm', InputOption::VALUE_REQUIRED, 'Metoda doboru puli (AI/Manual)');
+        $this->addOption('pool', null, InputOption::VALUE_REQUIRED, 'Pula liczb dla trybu Manual (np. "all" albo "1,5,12,18")');
+        $this->addOption('bankers-per-bet', null, InputOption::VALUE_REQUIRED, 'Tryb 6: ilu bankierów na jednym kuponie');
+        $this->addOption('l1-size', null, InputOption::VALUE_REQUIRED, 'Tryb 5: rozmiar bloku L1');
+        $this->addOption('l1-count', null, InputOption::VALUE_REQUIRED, 'Tryb 5: liczba bloków L1');
+        $this->addOption('l2-size', null, InputOption::VALUE_REQUIRED, 'Tryb 5: rozmiar bloku L2');
+        $this->addOption('l2-count', null, InputOption::VALUE_REQUIRED, 'Tryb 5: liczba podbloków L2');
+        $this->addOption('block-size', null, InputOption::VALUE_REQUIRED, 'Tryb 2: rozmiar bloku');
+        $this->addOption('block-count', null, InputOption::VALUE_REQUIRED, 'Tryb 2: liczba bloków');
+        $this->addOption('hot', null, InputOption::VALUE_REQUIRED, 'Tryb 3: liczby gorące o zwiększonej wadze');
         $this->addOption('mode', 'm', InputOption::VALUE_REQUIRED, 'Tryb pracy generatora (1-8)');
         $this->addOption('neighbours', 'nb', InputOption::VALUE_NONE, 'Czy uwzględniać w analizie liczby sąsiadujące (+1/-1)?');
         $this->addOption('bankers', 'bk', InputOption::VALUE_REQUIRED, 'Liczby bankierów oddzielone przecinkami/spacją (dla trybów 4 i 6)');
@@ -217,14 +233,33 @@ class LottoTuiCommand extends Command
             $fullPool = $result['pool'] ?? $result['selected_pool'] ?? [];
             sort($fullPool);
 
+            if ($result['is_fallback'] ?? false) {
+                $io->warning(
+                    "Agent AI nie zwrócił wyniku analizy — pula pochodzi z trybu awaryjnego.
+"
+                    . "Nie traktuj jej jako rekomendacji statystycznej."
+                );
+            }
+
             if (!empty($result['reasoning'])) {
                 $io->text("<comment>Uzasadnienie ReAct Agent:</comment> " . $result['reasoning']);
             }
             $io->success("Pula AI (" . count($fullPool) . " liczb): " . implode(', ', $fullPool));
         } else {
-            $poolStr = $this->promptInput('Podaj pulę liczb oddzielonych spacją lub przecinkiem (np. 1 5 12 18):');
-            preg_match_all('/\d+/', $poolStr, $matches);
-            $fullPool = array_unique(array_map('intval', $matches[0] ?? []));
+            $poolOpt = $input->getOption('pool');
+            $maxNum = $game['from'] ?? 49;
+
+            if ($poolOpt !== null && strtolower(trim((string) $poolOpt)) === 'all') {
+                $fullPool = range(1, $maxNum);
+            } else {
+                $poolStr = ($poolOpt !== null && $poolOpt !== '')
+                    ? (string) $poolOpt
+                    : (string) $this->promptInput('Podaj pulę liczb oddzielonych spacją lub przecinkiem (np. 1 5 12 18):');
+                preg_match_all('/\d+/', $poolStr, $matches);
+                $fullPool = array_values(array_unique(array_map('intval', $matches[0] ?? [])));
+            }
+
+            $fullPool = array_values(array_filter($fullPool, static fn(int $n): bool => $n >= 1 && $n <= $maxNum));
             sort($fullPool);
             $io->success("Pula ręczna: " . implode(', ', $fullPool));
         }
@@ -235,7 +270,7 @@ class LottoTuiCommand extends Command
         }
 
         $modeOpt = $input->getOption('mode');
-        if ($modeOpt && in_array((string)$modeOpt, ['1', '2', '3', '4', '5', '6', '7'], true)) {
+        if ($modeOpt && in_array((string)$modeOpt, ['1', '2', '3', '4', '5', '6', '7', '8'], true)) {
             $mode = (string)$modeOpt;
         } else {
             $io->section("METODA PRACY (Generator)");
@@ -245,204 +280,112 @@ class LottoTuiCommand extends Command
                 '3' => '[3] GENERATOR WAŻONY (Statystyczny)',
                 '4' => '[4] SYSTEM HYBRYDOWY (Stali Bankierzy + Zmienne z Puli)',
                 '5' => '[5] SYSTEM FRAKTALNY (Zaawansowane bloki)',
-                '6' => '[6] SYSTEM ROZDZIELNY (Bankierzy RotACYJNI)',
+                '6' => '[6] SYSTEM ROZDZIELNY (Bankierzy Rotacyjni)',
                 '7' => '[7] OPTYMALIZACJA STATYSTYCZNA (Synergia Par/Trójek - Tryb Hot)',
                 '8' => '[8] RANKINGOWE PEŁNE POKRYCIE (Synergia Par + Gwarancja 100% Puli)',
             ], '8');
         }
 
-        $blocksToProcess = [];
-        $bankersOpt = $input->getOption('bankers');
-        $statsReport = null;
-
-        if ($mode === '8') {
-            $io->text("RANKINGOWE PEŁNE POKRYCIE (Synergia Par + Gwarancja 100% Puli)");
-            $defaultBets = count($fullPool) >= 40 ? 15 : 10;
-            $betsLimit = (int)($input->getOption('bets') ?: $this->promptInput(sprintf('Ile zakładów wygenerować z puli %d liczb?', count($fullPool)), (string)$defaultBets));
-
-            $sessions = (int)($input->getOption('sessions') ?: 50);
-            $dateFrom = $this->gameRegistryService->calculateDateFromForSessions($gameType, $sessions);
-            $statsData = $this->lottoApiClient->getHotColdNumbers($gameType, $dateFrom);
-            $frequencies = $statsData['sorted_by_freq_desc'] ?? [];
-
-            $io->text("Uruchamianie algorytmu pełnego pokrycia partytywnego i optymalizacji synergii...");
-            $optResult = $this->statisticalOptimizer->optimizeBetsWithFullCoverage(
-                $fullPool,
-                $game['pick'],
-                $betsLimit,
-                $frequencies,
-                $game['from'] ?? 49
-            );
-
-            $blocksToProcess[] = ['type' => 'precalc', 'bets' => $optResult['bets']];
-            $statsReport = $optResult['report'];
-
-        } elseif ($mode === '7') {
-            $io->text("OPTYMALIZACJA STATYSTYCZNA PRZY ROZWODNIENIU (Synergia Par i Trójek)");
-            $betsLimit = (int)($input->getOption('bets') ?: $this->promptInput('Ile zakładów wygenerować z puli (np. 100 lub 25)?', '100'));
-
-            $sessions = (int)($input->getOption('sessions') ?: 50);
-            $dateFrom = $this->gameRegistryService->calculateDateFromForSessions($gameType, $sessions);
-            $statsData = $this->lottoApiClient->getHotColdNumbers($gameType, $dateFrom);
-            $frequencies = $statsData['sorted_by_freq_desc'] ?? [];
-
-            $io->text("Uruchamianie algorytmu optymalizatora heurystycznego...");
-            $optResult = $this->statisticalOptimizer->optimizeBetsForDilution(
-                $fullPool,
-                $game['pick'],
-                $betsLimit,
-                $frequencies,
-                $game['from'] ?? 49
-            );
-
-            $blocksToProcess[] = ['type' => 'precalc', 'bets' => $optResult['bets']];
-            $statsReport = $optResult['report'];
-
-        } elseif ($mode === '6') {
-            $io->text("SYSTEM ROZDZIELNY (BANKIERZY ROTACYJNI)");
-            if ($bankersOpt) {
-                $bankStr = $bankersOpt;
-            } else {
-                $bankStr = $this->promptInput('Wpisz liczby BANKIERÓW z Puli (np. 8 sztuk):');
-            }
-            preg_match_all('/\d+/', $bankStr, $matches);
-            $bankersPool = array_unique(array_map('intval', $matches[0] ?? []));
-            $bankersQty = (int)$this->promptInput('Ile z tych Bankierów ma być na każdym kuponie?', '3');
-
-            $varsPool = array_diff($fullPool, $bankersPool);
-            sort($varsPool);
-            sort($bankersPool);
-
-            $slotsForVars = $game['pick'] - $bankersQty;
-            $betsLimit = (int)($input->getOption('bets') ?: $this->promptInput('Ile zakładów wygenerować?', '30'));
-
-            $bankerBets = $this->generatorService->generateBalancedShorthand($bankersPool, $bankersQty, $betsLimit);
-            $varBets = $this->generatorService->generateBalancedShorthand($varsPool, $slotsForVars, $betsLimit);
-
-            shuffle($varBets);
-            $generatedHybridBets = [];
-            $limit = min(count($bankerBets), count($varBets));
-
-            for ($i = 0; $i < $limit; $i++) {
-                $fullBet = array_merge($bankerBets[$i], $varBets[$i]);
-                sort($fullBet);
-                if (count(array_unique($fullBet)) === $game['pick']) {
-                    $generatedHybridBets[] = $fullBet;
-                }
-            }
-            $blocksToProcess[] = ['type' => 'precalc', 'bets' => $generatedHybridBets];
-
-        } elseif ($mode === '5') {
-            $io->text("SYSTEM FRAKTALNY");
-            $l1Size = (int)$this->promptInput("Rozmiar Bloku L1 (np. 12):", '12');
-            $l1Count = (int)$this->promptInput("Ile Bloków L1 (np. 4):", '4');
-            $l2Size = (int)$this->promptInput("Rozmiar Bloku L2 (np. 8):", '8');
-            $l2Count = (int)$this->promptInput("Ile podziałów na L2 z każdego L1 (np. 2):", '2');
-
-            $l1Blocks = $this->generatorService->generateOverlappingBlocks($fullPool, $l1Count, $l1Size);
-            foreach ($l1Blocks as $parentBlock) {
-                $subBlocks = $this->generatorService->generateOverlappingBlocks($parentBlock, $l2Count, $l2Size);
-                foreach ($subBlocks as $sb) {
-                    $blocksToProcess[] = $sb;
-                }
-            }
-
-        } elseif ($mode === '4') {
-            $io->text("SYSTEM HYBRYDOWY (Stali Bankierzy)");
-            if ($bankersOpt) {
-                $bankStr = $bankersOpt;
-            } else {
-                $bankStr = $this->promptInput('Wpisz stałych Bankierów (będą na każdym kuponie):');
-            }
-            preg_match_all('/\d+/', $bankStr, $matches);
-            $bankers = array_unique(array_map('intval', $matches[0] ?? []));
-            $vars = array_diff($fullPool, $bankers);
-            sort($bankers);
-            sort($vars);
-            $blocksToProcess[] = ['type' => 'hybrid', 'bankers' => $bankers, 'vars' => $vars];
-
-        } elseif ($mode === '3') {
-            $io->text("GENERATOR WAŻONY");
-            $hotStr = $this->promptInput('Wpisz z Puli liczby GORĄCE (dostaną większą wagę):');
-            preg_match_all('/\d+/', $hotStr, $matches);
-            $hotNums = array_unique(array_map('intval', $matches[0] ?? []));
-            $weightOpt = $input->getOption('weight');
-            $weight = $weightOpt && is_numeric($weightOpt) ? (int)$weightOpt : (int)$this->promptInput('Waga (2-10):', '5');
-
-            $urn = [];
-            foreach ($fullPool as $n) {
-                if (in_array($n, $hotNums, true)) {
-                    for ($k = 0; $k < $weight; $k++) {
-                        $urn[] = $n;
-                    }
-                } else {
-                    $urn[] = $n;
-                }
-            }
-            $weightedPool = [];
-            $targetSize = min(count($fullPool), 15);
-            while (count($weightedPool) < $targetSize) {
-                shuffle($urn);
-                $x = $urn[0];
-                if (!in_array($x, $weightedPool, true)) {
-                    $weightedPool[] = $x;
-                }
-            }
-            sort($weightedPool);
-            $blocksToProcess[] = $weightedPool;
-
-        } elseif ($mode === '2') {
-            $io->text("KREATOR BLOKÓW (Inteligentny Krupier)");
-            $bs = (int)$this->promptInput("Rozmiar bloku (np. 12):", '12');
-            $bn = (int)$this->promptInput("Ile bloków:", '5');
-            $blocksToProcess = $this->generatorService->generateSmartUniqueBlocks($fullPool, $bs, $bn);
-
-        } else {
-            $blocksToProcess[] = $fullPool;
+        // Ile kuponow LACZNIE (nie na blok - patrz finding B1 w docs/REVIEW.md).
+        $betsTotal = (int) ($input->getOption('bets') ?: 0);
+        if ($betsTotal < 1) {
+            $default = in_array($mode, ['7', '8'], true)
+                ? (count($fullPool) >= 40 ? '100' : '25')
+                : '10';
+            $betsTotal = (int) ($input->isInteractive()
+                ? $this->promptInput('Ile zakladow wygenerowac LACZNIE?', $default)
+                : $default);
         }
 
-        if (empty($blocksToProcess)) {
-            $io->error("Brak danych do wygenerowania.");
+        $sessions = (int) ($input->getOption('sessions') ?: 50);
+        $history = $this->historicalDataProvider->fetch($gameType, $sessions);
+
+        if (!$history['ok']) {
+            $io->warning($history['warning']);
+            $io->note('Kupony zostana wygenerowane, ale bez warstwy statystycznej: wszystkie liczby sa traktowane jednakowo.');
+        } elseif ($history['warning'] !== null) {
+            $io->note($history['warning']);
+        }
+
+        $gameForPipeline = $game;
+        $gameForPipeline['_special_frequencies'] = $history['special_frequencies'] ?? [];
+        $gameForPipeline['_special_draws'] = $history['special_draws'] ?? [];
+
+        $askNumbers = function (string $option, string $question) use ($input): array {
+            $raw = $input->getOption($option);
+            // promptInput to wlasny prompt TUI - sam z siebie nie honoruje
+            // --no-interaction, wiec trzeba go pominac jawnie.
+            if (($raw === null || $raw === '') && $input->isInteractive()) {
+                $raw = $this->promptInput($question, '');
+            }
+            preg_match_all('/\\d+/', (string) $raw, $m);
+
+            return array_values(array_unique(array_map('intval', $m[0] ?? [])));
+        };
+
+        $askInt = function (string $option, string $question, string $default) use ($input): int {
+            $raw = $input->getOption($option);
+            if ($raw === null || $raw === '') {
+                $raw = $input->isInteractive() ? $this->promptInput($question, $default) : $default;
+            }
+
+            return (int) $raw;
+        };
+
+        $request = new BetPipelineRequest(
+            game: $gameForPipeline,
+            pool: $fullPool,
+            mode: $mode,
+            betsTotal: $betsTotal,
+            frequencies: $history['frequencies'],
+            draws: $history['draws'],
+            bankers: in_array($mode, ['4', '6'], true)
+                ? $askNumbers('bankers', 'Wpisz liczby BANKIEROW z puli:')
+                : [],
+            bankersPerBet: $mode === '6' ? $askInt('bankers-per-bet', 'Ilu Bankierow na kazdym kuponie?', '3') : 3,
+            l1Size: $mode === '5' ? $askInt('l1-size', 'Rozmiar Bloku L1:', '12') : 12,
+            l1Count: $mode === '5' ? $askInt('l1-count', 'Ile Blokow L1:', '4') : 4,
+            l2Size: $mode === '5' ? $askInt('l2-size', 'Rozmiar Bloku L2:', '8') : 8,
+            l2Count: $mode === '5' ? $askInt('l2-count', 'Ile podblokow L2:', '2') : 2,
+            blockSize: $mode === '2' ? $askInt('block-size', 'Rozmiar bloku:', '12') : 12,
+            blockCount: $mode === '2' ? $askInt('block-count', 'Ile blokow:', '5') : 5,
+            hotNumbers: $mode === '3' ? $askNumbers('hot', 'Wpisz liczby GORACE (wieksza waga):') : [],
+            weight: $mode === '3' ? $askInt('weight', 'Waga (2-10):', '5') : 5,
+        );
+
+        $io->text('Generowanie pakietu (tryb ' . $mode . ')...');
+
+        try {
+            $pipelineResult = $this->betPipeline->run($request);
+        } catch (\InvalidArgumentException $e) {
+            $io->error($e->getMessage());
+
             return Command::FAILURE;
         }
 
-        $firstBlock = $blocksToProcess[0];
-        if (isset($firstBlock['type']) && $firstBlock['type'] === 'precalc') {
-            $betsLimit = count($firstBlock['bets']);
-        } elseif (isset($firstBlock['type']) && $firstBlock['type'] === 'hybrid') {
-            $betsLimit = (int)($input->getOption('bets') ?: $this->promptInput('Ile zakładów wygenerować z puli zmiennych?:', '10'));
-        } else {
-            $sysSize = count($firstBlock);
-            $io->text("Rozmiar bloku roboczego: $sysSize liczb.");
-            $betsLimit = (int)($input->getOption('bets') ?: $this->promptInput('Ile zakładów wygenerować na JEDEN blok?', '5'));
-        }
-
-        $allFinalBets = [];
-
-        foreach ($blocksToProcess as $data) {
-            if (isset($data['type']) && $data['type'] === 'precalc') {
-                $finalBets = $data['bets'];
-            } elseif (isset($data['type']) && $data['type'] === 'hybrid') {
-                $bankers = $data['bankers'];
-                $vars = $data['vars'];
-                $needed = $game['pick'] - count($bankers);
-                $subBets = $this->generatorService->generateBalancedShorthand($vars, $needed, $betsLimit);
-                $finalBets = [];
-                foreach ($subBets as $sb) {
-                    $merged = array_merge($bankers, $sb);
-                    sort($merged);
-                    $finalBets[] = $merged;
-                }
-            } else {
-                $finalBets = $this->generatorService->generateBalancedShorthand($data, $game['pick'], $betsLimit);
-            }
-
-            foreach ($finalBets as $bet) {
-                $allFinalBets[] = $bet;
-            }
-        }
+        $allFinalBets = $pipelineResult->bets;
+        $statsReport = $pipelineResult->statsReport;
+        $extraSets = $pipelineResult->extraSets;
+        $extraInfo = $pipelineResult->extraInfo;
 
         $io->success("Wygenerowano " . count($allFinalBets) . " zakładów!");
+
+        if ($extraInfo !== null) {
+            $io->text(sprintf(
+                'Liczby dodatkowe: %d z %d — %d różnych zestawów z %d możliwych (źródło: %s).',
+                (int) $game['extra'],
+                (int) $game['extra_from'],
+                $extraInfo['distinct_sets'],
+                $extraInfo['total_possible'],
+                $extraInfo['source'] === 'historical_co_occurrence'
+                    ? 'rzeczywiste współwystępowanie'
+                    : 'heurystyka częstotliwościowa'
+            ));
+        }
+
+        foreach ($pipelineResult->warnings as $warning) {
+            $io->warning($warning);
+        }
 
         $tableData = [];
         if ($statsReport !== null && isset($statsReport['ranked_bets'])) {
@@ -460,7 +403,7 @@ class LottoTuiCommand extends Command
                     $statusTag = '<fg=gray>[Pokrycie Puli]</>';
                 }
 
-                $tableData[] = [
+                $row = [
                     $rankStr,
                     implode(', ', array_map(fn($n) => sprintf('%2d', $n), $bet)),
                     $fit['sum'],
@@ -468,13 +411,25 @@ class LottoTuiCommand extends Command
                     sprintf('%.1f', $fit['total_score']),
                     $statusTag,
                 ];
+                if ($extraSets !== []) {
+                    array_splice($row, 2, 0, [implode(', ', $extraSets[$i] ?? [])]);
+                }
+                $tableData[] = $row;
             }
-            $io->table(['Ranking', 'Liczby', 'Suma', 'Parz (N:P)', 'Synergy Score', 'Profil / Status'], array_slice($tableData, 0, 30));
+            $headers = ['Ranking', 'Liczby', 'Suma', 'Parz (N:P)', 'Synergy Score', 'Profil / Status'];
+            if ($extraSets !== []) {
+                array_splice($headers, 2, 0, ['Dodatkowe']);
+            }
+            $io->table($headers, array_slice($tableData, 0, 30));
         } else {
             foreach ($allFinalBets as $i => $bet) {
-                $tableData[] = ['Zakład ' . ($i + 1), implode(', ', $bet)];
+                $row = ['Zakład ' . ($i + 1), implode(', ', $bet)];
+                if ($extraSets !== []) {
+                    $row[] = implode(', ', $extraSets[$i] ?? []);
+                }
+                $tableData[] = $row;
             }
-            $io->table(['L.p.', 'Liczby'], $tableData);
+            $io->table($extraSets !== [] ? ['L.p.', 'Liczby', 'Dodatkowe'] : ['L.p.', 'Liczby'], $tableData);
         }
 
         // --- OKNO STATYSTYCZNE (Dla trybu 7, 8 lub dużej puli) ---
@@ -502,9 +457,9 @@ class LottoTuiCommand extends Command
             $io->table(
                 ['Wskaźnik', 'Optymalizator', 'Losowy Baseline', 'Przewaga'],
                 [
-                    ['Średni Synergy Score', sprintf('%.1f', $bench['optimized_avg_synergy_score']), sprintf('%.1f', $bench['random_baseline_avg_score']), sprintf('+%.1f%%', $bench['synergy_advantage_percent'])],
-                    ['Zgodność z Gaussa (Sumy)', sprintf('%.1f%%', $bench['optimized_gaussian_adherence_pct']), sprintf('%.1f%%', $bench['random_gaussian_adherence_pct']), sprintf('+%.1f pp', $bench['optimized_gaussian_adherence_pct'] - $bench['random_gaussian_adherence_pct'])],
-                    ['Balans Parzystości', sprintf('%.1f%%', $bench['optimized_parity_balance_pct']), sprintf('%.1f%%', $bench['random_parity_balance_pct']), sprintf('+%.1f pp', $bench['optimized_parity_balance_pct'] - $bench['random_parity_balance_pct'])],
+                    ['Średni Synergy Score', sprintf('%.1f', $bench['optimized_avg_synergy_score']), sprintf('%.1f', $bench['random_baseline_avg_score']), sprintf('%+.1f%%', $bench['synergy_advantage_percent'])],
+                    ['Zgodność z Gaussa (Sumy)', sprintf('%.1f%%', $bench['optimized_gaussian_adherence_pct']), sprintf('%.1f%%', $bench['random_gaussian_adherence_pct']), sprintf('%+.1f pp', $bench['optimized_gaussian_adherence_pct'] - $bench['random_gaussian_adherence_pct'])],
+                    ['Balans Parzystości', sprintf('%.1f%%', $bench['optimized_parity_balance_pct']), sprintf('%.1f%%', $bench['random_parity_balance_pct']), sprintf('%+.1f pp', $bench['optimized_parity_balance_pct'] - $bench['random_parity_balance_pct'])],
                 ]
             );
         }

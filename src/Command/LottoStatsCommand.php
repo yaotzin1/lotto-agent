@@ -7,6 +7,7 @@ namespace App\Command;
 use App\Service\GameRegistryService;
 use App\Service\GeminiApiClient;
 use App\Service\LottoApiClient;
+use App\Service\HistoricalDataProvider;
 use App\Service\StatisticalOptimizerService;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -26,6 +27,7 @@ class LottoStatsCommand extends Command
         private readonly LottoApiClient $lottoApiClient,
         private readonly GameRegistryService $gameRegistryService,
         private readonly StatisticalOptimizerService $optimizerService,
+        private readonly HistoricalDataProvider $historicalDataProvider,
         private readonly GeminiApiClient $geminiApiClient,
         private readonly LoggerInterface $logger
     ) {
@@ -82,9 +84,25 @@ class LottoStatsCommand extends Command
             $io->text(sprintf("📡 Łączenie z LOTTO OpenAPI (developers.lotto.pl) dla gry <fg=yellow;options=bold>%s</>...", $gameType));
         }
 
-        $stats = $this->lottoApiClient->getHotColdNumbers($gameType, $dateFrom);
-        $frequencies = $stats['sorted_by_freq_desc'] ?? [];
-        $totalDrawsAnalyzed = $stats['draws_analyzed'] ?? $sessions;
+        $history = $this->historicalDataProvider->fetch($gameType, $sessions, $months);
+        $stats = [
+            'date_from' => $history['date_from'],
+            'date_to' => $history['date_to'],
+            'sorted_by_freq_desc' => $history['frequencies'],
+        ];
+        $frequencies = $history['frequencies'];
+        $draws = $history['draws'];
+        $totalDrawsAnalyzed = $history['draws_analyzed'] ?: $sessions;
+
+        if (!$history['ok'] && !$isJson) {
+            $io->warning($history['warning']);
+            $io->note(
+                "Raport zostanie wygenerowany, ale WSZYSTKIE wskaźniki oparte na historii "
+                . "(hot/cold, affinity, ranking synergii) są w tym stanie bezwartościowe."
+            );
+        } elseif ($history['warning'] !== null && !$isJson) {
+            $io->note($history['warning']);
+        }
 
         // 2. Określenie puli
         $poolOpt = $input->getOption('pool');
@@ -159,7 +177,7 @@ class LottoStatsCommand extends Command
             $betsCount,
             $frequencies,
             $maxNumber,
-            ['full_coverage' => $fullCoverage]
+            ['full_coverage' => $fullCoverage, 'draws' => $draws]
         );
 
         $bets = $optimizationResult['bets'];
@@ -212,6 +230,10 @@ class LottoStatsCommand extends Command
                 'game_config' => ['pick' => $pick, 'from' => $maxNumber],
                 'data_source' => [
                     'provider' => 'developers.lotto.pl (LOTTO OpenAPI)',
+                    'ok' => $history['ok'],
+                    'warning' => $history['warning'],
+                    'affinity_source' => $report['affinity_source'] ?? null,
+                    'draws_used_for_co_occurrence' => $report['affinity_draws_used'] ?? 0,
                     'draws_analyzed' => $totalDrawsAnalyzed,
                     'date_from' => $stats['date_from'] ?? $dateFrom,
                     'date_to' => $stats['date_to'] ?? (new \DateTime())->format('Y-m-d\TH:i:s\Z'),
@@ -266,7 +288,22 @@ class LottoStatsCommand extends Command
         );
 
         // 2. Macierz Najmocniejszych Par
+        $isRealCoOcc = ($report['affinity_source'] ?? '') === StatisticalOptimizerService::AFFINITY_SOURCE_CO_OCCURRENCE;
         $io->section("2. Macierz Najmocniejszych Powiązań (Top Pary o Najwyższym Affinity)");
+        if ($isRealCoOcc) {
+            $io->text(sprintf(
+                "<fg=green>Źródło: RZECZYWISTE współwystępowanie par z %d losowań.</>",
+                $report['affinity_draws_used'] ?? 0
+            ));
+        } else {
+            $io->text(
+                "<fg=yellow>Źródło: heurystyka częstotliwościowa (brak historii losowań).</>
+"
+                . "<fg=yellow>To NIE jest statystyka par — wartość zależy wyłącznie od częstotliwości</>
+"
+                . "<fg=yellow>pojedynczych liczb, więc 'najsilniejsza para' to po prostu dwie najgorętsze liczby.</>"
+            );
+        }
         $topPairsData = [];
         foreach ($report['top_pairs'] as $idx => $pairInfo) {
             $topPairsData[] = [
@@ -304,7 +341,7 @@ class LottoStatsCommand extends Command
         $io->section("4. Struktura Parzystości (Nieparzyste : Parzyste)");
         $parityRows = [];
         foreach ($report['parity_summary'] as $ratio => $count) {
-            $pct = round(($count / $betsCount) * 100, 1);
+            $pct = count($bets) > 0 ? round(($count / count($bets)) * 100, 1) : 0.0;
             $parityRows[] = [$ratio, $count, sprintf('%.1f%%', $pct)];
         }
         $io->table(['Stosunek (N:P)', 'Liczba Kuponów', 'Udział %'], $parityRows);
@@ -312,6 +349,15 @@ class LottoStatsCommand extends Command
         // 5. Benchmark Jakości (Optimizer vs Random Baseline)
         $bench = $report['benchmark'];
         $io->section("5. Benchmark Jakości: Optymalizator Synergii vs Losowy Baseline");
+        $io->text(
+            "<fg=yellow>UWAGA METODOLOGICZNA:</> baseline losowy jest oceniany TĄ SAMĄ funkcją celu,
+"
+            . "którą optymalizator maksymalizuje. Poniższa 'przewaga' mówi więc wyłącznie, że
+"
+            . "optymalizator zoptymalizował własną funkcję oceny. <fg=yellow>Nie jest to miara szansy
+"
+            . "na wygraną ani oczekiwanego zwrotu z gry.</>"
+        );
         $io->table(
             ['Wskaźnik Analityczny', 'Optymalizator Statystyczny', 'Losowy Baseline (Monte Carlo)', 'Zysk / Przewaga'],
             [
@@ -345,7 +391,7 @@ class LottoStatsCommand extends Command
         // 7. Lista Wygenerowanych Zakładów (Ranking Synergii)
         $io->section(sprintf("7. Wygenerowany Pakiet (%d Zakładów - Ranking Synergii)", count($bets)));
         $tableData = [];
-        $pairMatrix = $this->optimizerService->buildPairAffinityMatrix($fullPool, $frequencies);
+        $pairMatrix = $this->optimizerService->buildPairAffinityMatrix($fullPool, $frequencies, $draws);
         $gaussParams = $this->optimizerService->calculateGaussianParameters($maxNumber, $pick);
 
         foreach ($bets as $i => $bet) {
@@ -377,10 +423,14 @@ class LottoStatsCommand extends Command
         }
 
         $io->success(sprintf(
-            "Pomyślnie zoptymalizowano pakiet %d zakładów dla gry %s (pula: %d liczb)! Zysk synergii: +%.1f%% względem losowego doboru.",
+            "Wygenerowano pakiet %d zakładów dla gry %s (pula: %d liczb).",
             count($bets),
             $gameType,
-            count($fullPool),
+            count($fullPool)
+        ));
+        $io->text(sprintf(
+            "Wewnętrzny wskaźnik dopasowania: %+.1f%% względem losowego doboru z tej samej puli "
+            . "(miara samozwrotna — patrz uwaga w sekcji 5).",
             $bench['synergy_advantage_percent']
         ));
 

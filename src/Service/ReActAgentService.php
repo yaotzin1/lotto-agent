@@ -128,6 +128,12 @@ Faza 4 [Synteza]: Zwróć końcowy wynik WYŁĄCZNIE w formacie JSON:
 
             $hasFunctionCall = false;
 
+            // Gemini może zwrócić KILKA wywołań w jednej turze. Wcześniej
+            // wykonywane było tylko pierwsze, ale do historii trafiały wszystkie
+            // części modelu i tylko JEDNA odpowiedź — czyli historia niezgodna
+            // z kontraktem v1beta. Teraz zbieramy odpowiedzi na wszystkie.
+            $functionResponseParts = [];
+
             foreach ($parts as $part) {
                 if (isset($part['functionCall'])) {
                     $hasFunctionCall = true;
@@ -168,27 +174,15 @@ Faza 4 [Synteza]: Zwróć końcowy wynik WYŁĄCZNIE w formacie JSON:
                         $onStepCallback('tool_result', $stepLog);
                     }
 
-                    // Append assistant turn preserving exact parts returned by Gemini (including thought_signatures)
-                    $contents[] = [
-                        'role' => 'model',
-                        'parts' => $parts,
-                    ];
-
-                    // Append functionResponse turn for Gemini API v1beta (role: user)
                     $decodedResult = json_decode($toolResultJson, true);
-                    $contents[] = [
-                        'role' => 'user',
-                        'parts' => [
-                            [
-                                'functionResponse' => [
-                                    'name' => $toolName,
-                                    'response' => is_array($decodedResult) ? $decodedResult : ['output' => $toolResultJson],
-                                ],
-                            ],
+                    $functionResponseParts[] = [
+                        'functionResponse' => [
+                            'name' => $toolName,
+                            'response' => is_array($decodedResult) ? $decodedResult : ['output' => $toolResultJson],
                         ],
                     ];
 
-                    break; // Handle one function call per loop iteration
+                    continue;
                 } elseif (isset($part['text'])) {
                     $text = $part['text'];
 
@@ -217,18 +211,23 @@ Faza 4 [Synteza]: Zwróć końcowy wynik WYŁĄCZNIE w formacie JSON:
                         }
                     }
 
-                    // Fallback regex for integer numbers
-                    preg_match_all('/\d+/', $text, $numMatches);
-                    $extracted = array_values(array_unique(array_map('intval', $numMatches[0] ?? [])));
-                    $validExtracted = array_values(array_filter($extracted, fn($n) => $n >= 1 && $n <= $maxNumber));
-                    if (count($validExtracted) >= $pickCount) {
-                        $finalPool = array_slice($validExtracted, 0, $poolSize);
-                        $finalReasoning = "Wytypowano pulę w oparciu o analizę ReAct Agent ($strategy).";
-                    }
+                    // ŚWIADOMIE BEZ regexu po samych liczbach.
+                    // Wcześniej `preg_match_all('/\d+/', $text)` zamieniało zdanie
+                    // "Analiza 50 losowań, 60% sąsiadów, 20% powtórek" w pulę
+                    // [50, 60, 20]. Akceptujemy wyłącznie kontrakt JSON powyżej.
                 }
             }
 
-            if (!$hasFunctionCall && !empty($finalPool)) {
+            if ($hasFunctionCall) {
+                // Tura modelu zachowana w całości (łącznie z thought_signatures),
+                // a po niej komplet odpowiedzi narzędziowych.
+                $contents[] = ['role' => 'model', 'parts' => $parts];
+                $contents[] = ['role' => 'user', 'parts' => $functionResponseParts];
+
+                continue;
+            }
+
+            if (!empty($finalPool)) {
                 break;
             }
         }
@@ -270,18 +269,37 @@ Faza 4 [Synteza]: Zwróć końcowy wynik WYŁĄCZNIE w formacie JSON:
         }
 
         // Guaranteed fallback using evaluated pool or smart range
+        $isFallback = false;
+
         if (count($finalPool) < $pickCount) {
-            if (!empty($lastEvaluatedPool)) {
-                $poolRange = range(1, $maxNumber);
-                $merged = array_values(array_unique(array_merge($lastEvaluatedPool, $poolRange)));
-                $finalPool = array_slice($merged, 0, $poolSize);
-                $finalReasoning = sprintf("Wytypowano pulę na podstawie przeprowadzonej analizy statystyk i ewaluacji narzędziami ReAct (%s).", $strategy);
+            $isFallback = true;
+
+            if (count($lastEvaluatedPool) >= $pickCount) {
+                // Pula, którą agent sam poddał ewaluacji — bez dosypywania 1,2,3...
+                $finalPool = array_slice($lastEvaluatedPool, 0, $poolSize);
+                $finalReasoning = sprintf(
+                    'UWAGA: agent nie zwrócił poprawnej odpowiedzi JSON. Użyto ostatniej puli, '
+                    . 'którą sam przekazał do narzędzia ewaluacyjnego (%d liczb, strategia %s). '
+                    . 'To NIE jest pełny wynik analizy.',
+                    count($finalPool),
+                    $strategy
+                );
             } else {
                 $poolRange = range(1, $maxNumber);
                 shuffle($poolRange);
                 $finalPool = array_slice($poolRange, 0, $poolSize);
-                $finalReasoning = sprintf("Wygenerowano pulę rezerwową (%s).", $strategy);
+                $finalReasoning = sprintf(
+                    'UWAGA: agent nie zwrócił użytecznego wyniku. Wygenerowano pulę LOSOWĄ (%s). '
+                    . 'Nie stoi za nią żadna analiza statystyczna.',
+                    $strategy
+                );
             }
+
+            $this->logger->warning('ReAct Agent nie zwrócił poprawnej puli; użyto trybu awaryjnego.', [
+                'game' => $game,
+                'strategy' => $strategy,
+                'had_evaluated_pool' => count($lastEvaluatedPool) >= $pickCount,
+            ]);
         }
 
         sort($finalPool);
@@ -291,6 +309,7 @@ Faza 4 [Synteza]: Zwróć końcowy wynik WYŁĄCZNIE w formacie JSON:
             'selected_pool' => $finalPool,
             'reasoning' => $finalReasoning,
             'steps' => $steps,
+            'is_fallback' => $isFallback,
         ];
     }
 }
