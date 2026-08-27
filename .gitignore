@@ -16,3 +16,8 @@
 /.env.prod
 !/.env.dev.example
 ###< project secrets ###
+
+###> phpunit/phpunit ###
+/phpunit.xml
+/.phpunit.cache/
+###< phpunit/phpunit ###
