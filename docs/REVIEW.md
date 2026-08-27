@@ -38,21 +38,29 @@ Dwa ustalenia z pierwszej wersji tego dokumentu okazały się nieprawidłowe i z
    `HttpClient` zwraca **HTTP 200**. Natomiast sam problem bezpieczeństwa okazał się
    **poważniejszy**, niż zakładano — patrz D1 poniżej.
 
-### 🔴 Eskalacja D1: klucze są w historii Git i na GitHubie
+### ✅ D1 rozwiązane: nowe repozytorium, historia bez kluczy
 
-W `lotto-simulator` pliki `.env` i `.env.dev` były **śledzone przez Git i zacommitowane
-w sześciu commitach**, a repozytorium ma osiągalny remote
-`https://github.com/yaotzin1/lotto-simulator.git`. W `HEAD` znajdował się aktywny klucz
-Google (`[USUNIETO]…`), klucz LOTTO oraz `APP_SECRET`.
+W poprzednim repozytorium (`lotto-simulator`) pliki `.env` i `.env.dev` były śledzone
+przez Git i zacommitowane w siedmiu commitach, razem z kluczami API i `APP_SECRET`.
 
-Wykonano: usunięcie z indeksu (`git rm --cached`), wpis w `.gitignore`, dodanie
-`.env.dev.example`.
+**Ocena ryzyka (po weryfikacji):** repozytorium było **prywatne**, bez forków i bez
+obserwujących. Klucze nie były publicznie dostępne. Wcześniejsza wersja tego dokumentu
+sugerowała ujawnienie publiczne i pilną rotację — **to było zawyżone**, bo napisano je
+przed sprawdzeniem widoczności repo.
 
-**Nadal wymaga działania właściciela repozytorium — samo usunięcie plików nie cofa publikacji:**
+**Co wykonano:**
 
-1. **Zrotuj oba klucze i `APP_SECRET`.** Google aktywnie skanuje GitHub pod kątem `[USUNIETO]`.
-2. Rozważ wyczyszczenie historii (`git filter-repo` / BFG) i wymuszony push — to operacja
-   przepisująca historię, więc pozostawiona do Twojej decyzji.
+1. `.env`, `.env.dev`, `.env.prod` dodane do `.gitignore`; dodano `.env.dev.example`.
+2. Historia przepisana przez `git filter-repo --invert-paths` — pliki usunięte ze
+   wszystkich commitów.
+3. Projekt przeniesiony do **nowego repozytorium**, którego historia nigdy nie zawierała
+   kluczy. Stare repozytorium zostaje usunięte w całości.
+
+**Weryfikacja:** w historii nowego repo `0` commitów zawierających `.env*` oraz `0`
+trafień dla klucza LOTTO i `APP_SECRET`.
+
+**Zalecenie:** rotacja kluczy pozostaje rozsądną praktyką (klucz przez jakiś czas
+znajdował się w repozytorium), ale nie jest pilna — nie doszło do ujawnienia publicznego.
 
 ---
 
