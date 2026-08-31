@@ -4,7 +4,9 @@
 [![PHP](https://img.shields.io/badge/PHP-8.5-777BB4.svg?logo=php&logoColor=white)](https://www.php.net/)
 [![Symfony](https://img.shields.io/badge/Symfony-8.2-000000.svg?logo=symfony&logoColor=white)](https://symfony.com/)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-Support-FF5E5B.svg?logo=ko-fi&logoColor=white)](https://ko-fi.com/yaotzin1)
+<!-- Re-add once GitHub Sponsors is enrolled:
 [![Sponsor](https://img.shields.io/badge/GitHub-Sponsor-EA4AAA.svg?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/yaotzin1)
+-->
 
 A Symfony 8 CLI & TUI application containerized with Docker, designed as an AI lotto agent utilizing Google Gemini models, ReAct Agent tooling, and advanced combinatorial & statistical optimization engines.
 
@@ -169,7 +171,9 @@ This is a spare-time project maintained for free. If it is useful to you, or you
 reading the mathematics behind it, you can support its development:
 
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-Buy%20me%20a%20coffee-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/yaotzin1)
+<!-- Re-add once GitHub Sponsors is enrolled:
 [![GitHub Sponsors](https://img.shields.io/badge/GitHub-Sponsor-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white)](https://github.com/sponsors/yaotzin1)
+-->
 
 Starring the repository and reporting bugs helps just as much, and costs nothing.
 
