@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest a new generator mode, statistic, or improvement
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the limitation you ran into.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: >
+        For new generator modes or statistics, describe the mathematics — what the mode
+        optimizes for and how it partitions or reduces the pool.
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: >
+            This proposal does not claim to improve the odds of winning. I understand every
+            combination has identical probability and that this project optimizes coverage
+            and distribution, not chance.
+          required: true
