@@ -1,0 +1,52 @@
+name: Bug report
+description: Something is broken or produces wrong output
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what did you get instead?
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The exact command you ran.
+      render: bash
+      placeholder: docker compose run --rm app php bin/console app:lotto-stats --game=Lotto --pool=all --bets=100
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Generator suite (app:lotto-generator)
+        - Statistical dashboard / optimizer (app:lotto-stats)
+        - Terminal UI (app:lotto-tui)
+        - ReAct AI agent (app:lotto-agent)
+        - Setup / Docker / dependencies
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output or error
+      description: Paste the relevant output. Redact any API keys before posting.
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Commit SHA or release tag.
+  - type: checkboxes
+    id: no-keys
+    attributes:
+      label: Confirmation
+      options:
+        - label: I have removed any API keys or secrets from the text above.
+          required: true

@@ -1,6 +1,44 @@
 {
+    "name": "yaotzin1/lotto-agent",
+    "description": "Symfony 8 CLI & TUI lottery system generator: combinatorial wheeling, Gaussian/affinity coverage optimization, and a Google Gemini ReAct agent.",
     "type": "project",
-    "license": "proprietary",
+    "keywords": [
+        "lottery",
+        "lotto",
+        "combinatorics",
+        "wheeling",
+        "statistics",
+        "symfony",
+        "cli",
+        "tui",
+        "gemini",
+        "react-agent",
+        "ai-agent"
+    ],
+    "homepage": "https://github.com/yaotzin1/lotto-agent",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Piotr Solarz-Wnęk",
+            "homepage": "https://github.com/yaotzin1",
+            "role": "Developer"
+        }
+    ],
+    "support": {
+        "issues": "https://github.com/yaotzin1/lotto-agent/issues",
+        "source": "https://github.com/yaotzin1/lotto-agent",
+        "docs": "https://github.com/yaotzin1/lotto-agent/blob/main/docs/HOW_TO_PLAY.md"
+    },
+    "funding": [
+        {
+            "type": "github",
+            "url": "https://github.com/sponsors/yaotzin1"
+        },
+        {
+            "type": "ko_fi",
+            "url": "https://ko-fi.com/yaotzin1"
+        }
+    ],
     "minimum-stability": "dev",
     "prefer-stable": true,
     "require": {

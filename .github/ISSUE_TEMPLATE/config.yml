@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Player's handbook (PL)
+    url: https://github.com/yaotzin1/lotto-agent/blob/main/docs/HOW_TO_PLAY.md
+    about: Detailed guide to every generator mode, budget scaling, and CLI commands.
+  - name: Support the project
+    url: https://ko-fi.com/yaotzin1
+    about: Buy me a coffee if the project is useful to you.

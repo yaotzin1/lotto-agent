@@ -1,11 +1,17 @@
 # Lotto Agent AI & Statistical System Generator
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![PHP](https://img.shields.io/badge/PHP-8.5-777BB4.svg?logo=php&logoColor=white)](https://www.php.net/)
+[![Symfony](https://img.shields.io/badge/Symfony-8.2-000000.svg?logo=symfony&logoColor=white)](https://symfony.com/)
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support-FF5E5B.svg?logo=ko-fi&logoColor=white)](https://ko-fi.com/yaotzin1)
+[![Sponsor](https://img.shields.io/badge/GitHub-Sponsor-EA4AAA.svg?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/yaotzin1)
+
 A Symfony 8 CLI & TUI application containerized with Docker, designed as an AI lotto agent utilizing Google Gemini models, ReAct Agent tooling, and advanced combinatorial & statistical optimization engines.
 
 ## Key Features
 
 1. **ReAct Agent AI (`app:lotto-agent`)**: Autonomous multi-turn AI agent that queries LOTTO statistics, evaluates co-occurrences, k-clique clusters, and builds high-potential number pools.
-2. **Mathematical Generator Suite (`app:lotto-generator`)**: 7 advanced mathematical wheeling & reduction modes (Fractal rolling overlap, Smart Croupier, Floating Bankers, Weighted, Split Bankers, and Statistical Optimizer).
+2. **Mathematical Generator Suite (`app:lotto-generator`)**: 8 advanced mathematical wheeling & reduction modes (Fractal rolling overlap, Smart Croupier, Floating Bankers, Weighted, Split Bankers, and Statistical Optimizer).
 3. **Interactive TUI Suite (`app:lotto-tui`)**: Terminal User Interface with interactive menus, progress indicators, and coverage matrix visualization.
 4. **Statistical Dashboard & Dilution Optimizer (`app:lotto-stats` / Mode 7)**:
    - Solves the problem of **heavy dilution (rozwodnienie)** when picking large pools (e.g. 49 numbers into 100 bets or 30 numbers into 25 bets).
@@ -37,10 +43,20 @@ When selecting a large pool (e.g. all 49 numbers) and generating a limited budge
 ## Setup and Installation
 
 1. **Environment Setup:**
-   Ensure your `.env.dev` or `.env` files are configured with the required API keys (Gemini & Lotto API keys).
+   Copy the example file and fill in your own API keys. Both `.env` and `.env.dev` are
+   gitignored, so your keys never leave your machine.
    ```bash
-   cp .env.dev .env
+   cp .env.dev.example .env.dev
    ```
+
+   | Variable | Required | Purpose |
+   |---|---|---|
+   | `GEMINI_API_KEY` | for `app:lotto-agent` | Google Gemini access for the ReAct agent ([get one](https://aistudio.google.com/app/apikey)) |
+   | `LOTTO_API_KEY` | for live draw history | Draw-history API access. Without it the optimizer falls back to a frequency heuristic that carries no pair information. |
+   | `APP_SECRET` | yes | Standard Symfony secret; any random string works locally. |
+
+   The purely mathematical modes (`app:lotto-generator`, `app:lotto-stats`) run without a
+   Gemini key — only the AI agent and live statistics need credentials.
 
 2. **Build the Docker Container:**
    ```bash
@@ -113,3 +129,54 @@ Run unit tests via PHPUnit:
 ```bash
 docker compose run --rm app vendor/bin/phpunit
 ```
+
+---
+
+## ⚠️ Disclaimer & Responsible Play
+
+**This project does not improve your chances of winning the lottery. Nothing can.**
+
+In a fair draw every combination is equally likely, and each draw is independent of every
+draw before it. A number being "hot", "overdue", or historically paired with another carries
+**no predictive power** — that belief is the [gambler's fallacy](https://en.wikipedia.org/wiki/Gambler%27s_fallacy).
+The historical co-occurrence matrices in this codebase describe the past; they do not forecast
+the future.
+
+What the software actually does is **combinatorial coverage optimization**: given a pool of
+numbers and a fixed budget of bets, it distributes those bets so the pool is covered evenly,
+sums fall in a plausible range, and parity and decade spread stay balanced. That changes the
+*shape* of your coverage and the distribution of possible payouts — it does not change the
+expected value, which remains negative for every lottery.
+
+Treat this repository as what it is: an exercise in Symfony architecture, combinatorial
+mathematics, and LLM agent tooling. Play only with money you can afford to lose, and if
+gambling has stopped being entertainment, seek help — in Poland,
+[Uzależnienia behawioralne](https://www.uzaleznieniabehawioralne.pl/) and the helpline
+**801 889 880**; elsewhere, your national problem-gambling service.
+
+---
+
+## Contributing
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for local setup, testing,
+and coding conventions.
+
+---
+
+## Support the Project
+
+This is a spare-time project maintained for free. If it is useful to you, or you simply enjoy
+reading the mathematics behind it, you can support its development:
+
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-Buy%20me%20a%20coffee-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/yaotzin1)
+[![GitHub Sponsors](https://img.shields.io/badge/GitHub-Sponsor-EA4AAA?style=for-the-badge&logo=githubsponsors&logoColor=white)](https://github.com/sponsors/yaotzin1)
+
+Starring the repository and reporting bugs helps just as much, and costs nothing.
+
+**Please fund this project rather than the lottery** — the expected return is better here.
+
+---
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
