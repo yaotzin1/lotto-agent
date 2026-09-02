@@ -801,6 +801,12 @@ class StatisticalOptimizerService
         $wFreq = $options['weight_freq'] ?? 1.5;
         $penaltyUsage = $options['penalty_usage'] ?? 10.0;
         $penaltyPairUsage = $options['penalty_pair'] ?? 25.0;
+        // Kara za pary już obsadzone, naliczana przy WYBORZE gotowego kuponu.
+        // Bez niej $penaltyPairUsage kształtował tylko kolejność doklejania
+        // pojedynczych liczb, a końcowy wybór spośród 300 kandydatów robiła
+        // calculateBetFitness(), która za wysokie affinity par NAGRADZA. Efekt:
+        // zestaw powtarzał te same mocne pary i tracił pokrycie par w puli.
+        $penaltyPairRepeat = $options['penalty_pair_repeat'] ?? 80.0;
 
         while (count($generatedBets) < $numBets) {
             $bestCandidateBet = null;
@@ -900,10 +906,21 @@ class StatisticalOptimizerService
                 if ($dup) continue;
 
                 $fit = $this->calculateBetFitness($currentBet, $pairMatrix, $frequencies, $gaussParams, $maxNumber);
-                if ($fit['total_score'] > $bestCandidateFitness) {
-                    $bestCandidateFitness = $fit['total_score'];
+
+                // Ile razy pary tego kuponu są już obsadzone w dotychczasowym zestawie.
+                $repeatedPairLoad = 0;
+                for ($i = 0; $i < $pick; $i++) {
+                    for ($j = $i + 1; $j < $pick; $j++) {
+                        $repeatedPairLoad += ($pairUsageCounts[$currentBet[$i]][$currentBet[$j]] ?? 0);
+                    }
+                }
+
+                $selectionScore = $fit['total_score'] - ($repeatedPairLoad * $penaltyPairRepeat);
+
+                if ($selectionScore > $bestCandidateFitness) {
+                    $bestCandidateFitness = $selectionScore;
                     $bestCandidateBet = $currentBet;
-                    if ($fit['is_gaussian_optimal'] && $fit['is_parity_balanced'] && $fit['max_consecutive'] <= 2 && $attempt > 15) {
+                    if ($repeatedPairLoad === 0 && $fit['is_gaussian_optimal'] && $fit['is_parity_balanced'] && $fit['max_consecutive'] <= 2 && $attempt > 15) {
                         break;
                     }
                 }

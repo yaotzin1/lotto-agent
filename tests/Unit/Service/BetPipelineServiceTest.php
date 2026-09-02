@@ -147,16 +147,48 @@ class BetPipelineServiceTest extends TestCase
 
     public function testReportsShortfallInsteadOfSilentlyReturningFewer(): void
     {
-        // 8 bankierów po 3 na kupon => C(8,3) = 56 to twardy sufit.
+        // Sufitem są liczby ZMIENNE, nie bankierzy: 7 zmiennych po 3 na kupon
+        // daje C(7,3) = 35 kuponów, więc 200 nie ma z czego powstać.
         $result = $this->pipeline->run($this->request('6', 200, [
-            'pool' => range(1, 40),
-            'bankers' => [3, 8, 14, 19, 25, 31, 38, 40],
+            'pool' => range(1, 10),
+            'bankers' => [1, 2, 3],
             'bankersPerBet' => 3,
         ]));
 
         self::assertLessThan(200, $result->count());
         self::assertNotEmpty($result->warnings);
         self::assertStringContainsString('Zamówiono 200', $result->warnings[0]);
+    }
+
+    public function testBankerCombinationCountDoesNotCapTheOrder(): void
+    {
+        // Regresja: przy 8 bankierach po 3 na kupon jest tylko C(8,3) = 56
+        // układów bankierskich, ale każdy da się połączyć z inną trójką
+        // zmiennych, więc 200 zakładów jest w pełni osiągalne.
+        $result = $this->pipeline->run($this->request('6', 200, [
+            'pool' => range(1, 40),
+            'bankers' => [3, 8, 14, 19, 25, 31, 38, 40],
+            'bankersPerBet' => 3,
+        ]));
+
+        self::assertSame(200, $result->count());
+        self::assertSame([], $result->warnings);
+    }
+
+    public function testRotatingBankersFillOrderWhenBankerCountEqualsPerBet(): void
+    {
+        // Podanie dokładnie tylu bankierów, ilu ma trafić na kupon, daje jeden
+        // układ bankierski. Wcześniej ucinało to cały pakiet do 1 zakładu.
+        $result = $this->pipeline->run($this->request('6', 15, [
+            'pool' => [4, 10, 17, 18, 19, 24, 27, 28, 29, 33, 43, 45],
+            'bankers' => [4, 17, 28],
+            'bankersPerBet' => 3,
+        ]));
+
+        self::assertSame(15, $result->count());
+        foreach ($result->bets as $bet) {
+            self::assertSame([4, 17, 28], array_values(array_intersect($bet, [4, 17, 28])));
+        }
     }
 
     // --- C4: liczby dodatkowe ---
