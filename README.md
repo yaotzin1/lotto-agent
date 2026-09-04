@@ -90,9 +90,26 @@ docker compose run --rm app php bin/console app:lotto-stats --game=Lotto --pool=
 ### 2. Interactive Terminal UI (`app:lotto-tui`)
 ```bash
 docker compose run --rm app php bin/console app:lotto-tui
+# Pula może być wygenerowana przez AI (Gemini), Stride (kroczenie co N losowań) lub Ręcznie.
 ```
 
-### 3. Generator Suite (`app:lotto-generator`)
+### 3. Stroboscopic / Stride Sampler (`app:lotto-stride`)
+Generates bets using historical draws spaced by a fixed stride $N$ (e.g. 257 or 127) and their $\pm 1$ neighbours:
+```bash
+# Stride 257, 12 numbers pool, 6 bets with Mode 8 Zero-Drop Full Coverage:
+docker compose run --rm app php bin/console app:lotto-stride --stride=257 --pool-size=12 --bets=6
+
+# Stride 127 with multi-anchor history (T-127, T-254):
+docker compose run --rm app php bin/console app:lotto-stride --stride=127 --strategy=multi_anchor --bets=10
+```
+
+### 4. Historical Stride Backtester (`app:lotto-backtest`)
+Empirical backtesting of stride sampling across all 7,399 historical Lotto draws:
+```bash
+docker compose run --rm app php bin/console app:lotto-backtest --pool-size=12 --strides="1,2,7,30,50,127,257,500"
+```
+
+### 5. Generator Suite (`app:lotto-generator`)
 ```bash
 # Run generator with Statistical Optimization mode (Mode 7):
 docker compose run --rm app php bin/console app:lotto-generator --game=Lotto --pool-mode=Manual --mode=7 --bets=100
@@ -101,7 +118,7 @@ docker compose run --rm app php bin/console app:lotto-generator --game=Lotto --p
 docker compose run --rm app php bin/console app:lotto-generator --game=Lotto --pool-mode=AI --strategy=syndicate --mode=5
 ```
 
-### 4. ReAct Agent AI (`app:lotto-agent`)
+### 6. ReAct Agent AI (`app:lotto-agent`)
 ```bash
 docker compose run --rm app php bin/console app:lotto-agent --game=Lotto --strategy=syndicate --sessions=15
 ```

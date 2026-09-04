@@ -26,9 +26,11 @@ statystyczną i nigdy nie jest tak opisywana.
 | Komenda | Plik | Co robi |
 |---|---|---|
 | `app:lotto-agent` | `src/Command/LottoAgentCommand.php` | Uruchamia pętlę ReAct i zwraca **pulę kandydującą**. Nie generuje kuponów. |
+| `app:lotto-stride` | `src/Command/LottoStrideCommand.php` | Generator stroboskopowy: pobiera kotwice co N losowań wstecz (np. N=257) + sąsiadów i generuje zakłady. |
+| `app:lotto-backtest` | `src/Command/LottoBacktestCommand.php` | Backtest kroczeń (stride sampling N) i sąsiadów na pełnej historii 7,399 losowań. |
 | `app:lotto-generator` | `src/Command/LottoGeneratorCommand.php` | Zamienia pulę (ręczną lub z AI) na kupony w jednym z 8 trybów. |
 | `app:lotto-stats` | `src/Command/LottoStatsCommand.php` | Okno statystyczne: rozwodnienie, macierz par, rozkład sum, ranking kuponów. |
-| `app:lotto-tui` | `src/Command/LottoTuiCommand.php` | Interaktywny odpowiednik generatora. |
+| `app:lotto-tui` | `src/Command/LottoTuiCommand.php` | Interaktywny odpowiednik generatora (obsługuje AI, Stride i Manual). |
 | `app:gemini-models` | `src/Command/GeminiModelsCommand.php` | Wypisuje modele dostępne dla klucza API. |
 
 > Nie istnieje `LottoCommand` — wcześniejsza wersja tego pliku opisywała klasę,

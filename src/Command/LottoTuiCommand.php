@@ -15,6 +15,7 @@ use App\Service\ExtraNumbersGenerator;
 use App\Service\HistoricalDataProvider;
 use App\Service\StatisticalOptimizerService;
 use App\Service\StatsWindowRenderer;
+use App\Service\StrideBacktestService;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
@@ -46,6 +47,7 @@ class LottoTuiCommand extends Command
         private readonly ExtraNumbersGenerator $extraNumbersGenerator,
         private readonly BetPipelineService $betPipeline,
         private readonly StatsWindowRenderer $statsWindowRenderer,
+        private readonly StrideBacktestService $strideService,
         private readonly LoggerInterface $logger
     ) {
         parent::__construct();
@@ -76,6 +78,9 @@ class LottoTuiCommand extends Command
         $this->addOption('neighbours', 'nb', InputOption::VALUE_NONE, 'Czy uwzględniać w analizie liczby sąsiadujące (+1/-1)?');
         $this->addOption('bankers', 'bk', InputOption::VALUE_REQUIRED, 'Liczby bankierów oddzielone przecinkami/spacją (dla trybów 4 i 6)');
         $this->addOption('weight', 'w', InputOption::VALUE_REQUIRED, 'Waga dla gorących liczb w generatorze ważonym (dla trybu 3)');
+        $this->addOption('stride', null, InputOption::VALUE_REQUIRED, 'Krok kroczenia wstecz dla trybu Stride (np. 257 lub 127)');
+        $this->addOption('stride-strategy', null, InputOption::VALUE_REQUIRED, 'Strategia w trybie Stride (anchor_neighbours lub multi_anchor)');
+        $this->addOption('anchors', 'a', InputOption::VALUE_REQUIRED, 'Liczba losowań kotwicznych wstecz w trybie Stride (np. 2, 3, 4, domyślnie: auto)');
     }
 
     private function promptSelect(string $question, array $choices, ?string $default = null): string
@@ -180,11 +185,16 @@ class LottoTuiCommand extends Command
         }
 
         $poolModeOpt = $input->getOption('pool-mode');
-        if ($poolModeOpt && in_array(strtolower($poolModeOpt), ['ai', 'manual'], true)) {
-            $poolMode = strtolower($poolModeOpt) === 'ai' ? 'AI' : 'Manual';
+        if ($poolModeOpt && in_array(strtolower($poolModeOpt), ['ai', 'manual', 'stride'], true)) {
+            $poolMode = match (strtolower($poolModeOpt)) {
+                'ai' => 'AI',
+                'stride' => 'Stride',
+                default => 'Manual',
+            };
         } else {
             $poolMode = $this->promptSelect('Jak chcesz wygenerować pulę wejściową liczb?', [
                 'AI' => 'AI (Na podstawie statystyk LOTTO API)',
+                'Stride' => 'Stride / Kroczenie N (Losowania wstecz co N kroków + sąsiedzi)',
                 'Manual' => 'Ręcznie (Wpisz własne liczby)',
             ], 'AI');
         }
@@ -249,8 +259,7 @@ class LottoTuiCommand extends Command
 
             if ($result['is_fallback'] ?? false) {
                 $io->warning(
-                    "Agent AI nie zwrócił wyniku analizy — pula pochodzi z trybu awaryjnego.
-"
+                    "Agent AI nie zwrócił wyniku analizy — pula pochodzi z trybu awaryjnego.\n"
                     . "Nie traktuj jej jako rekomendacji statystycznej."
                 );
             }
@@ -259,6 +268,59 @@ class LottoTuiCommand extends Command
                 $io->text("<comment>Uzasadnienie ReAct Agent:</comment> " . $result['reasoning']);
             }
             $io->success("Pula AI (" . count($fullPool) . " liczb): " . implode(', ', $fullPool));
+        } elseif ($poolMode === 'Stride') {
+            $strideOpt = $input->getOption('stride');
+            $stride = ($strideOpt !== null && is_numeric($strideOpt))
+                ? max(1, (int) $strideOpt)
+                : (int) $this->promptInput('Podaj krok kroczenia N wstecz w historii (np. 257 lub 127):', '257');
+
+            $strideStratOpt = $input->getOption('stride-strategy');
+            if ($strideStratOpt && in_array($strideStratOpt, ['anchor_neighbours', 'multi_anchor'], true)) {
+                $strideStrategy = (string) $strideStratOpt;
+            } else {
+                $strideStrategy = $this->promptSelect('Wybierz wariant strategii kroczenia:', [
+                    'anchor_neighbours' => 'Kotwica (losowanie T-N) + sąsiedzi (±1)',
+                    'multi_anchor' => 'Wielokrotne kotwice (losowania T-N, T-2N...) + sąsiedzi',
+                ], 'anchor_neighbours');
+            }
+
+            $poolSizeOpt = $input->getOption('pool-size');
+            if ($poolSizeOpt && is_numeric($poolSizeOpt) && (int) $poolSizeOpt >= $game['pick']) {
+                $poolSize = (int) $poolSizeOpt;
+            } else {
+                $poolSize = (int) $this->promptInput("Ile liczb ma zawierać pula Stride? (rekomendowane: 12 dla 6/49)", '12');
+            }
+
+            $anchorsOpt = $input->getOption('anchors');
+            $anchorCount = ($anchorsOpt !== null && is_numeric($anchorsOpt))
+                ? max(1, (int) $anchorsOpt)
+                : null;
+
+            if ($strideStrategy === 'multi_anchor' && $anchorCount === null && $input->isInteractive()) {
+                $autoAnchors = max(2, (int) ceil($poolSize / 6));
+                $ans = $this->promptInput(sprintf('Ile losowań kotwicznych wstecz (kroków N) próbkować? [Enter dla auto: %d]', $autoAnchors), (string) $autoAnchors);
+                if (is_numeric($ans) && (int) $ans > 0) {
+                    $anchorCount = (int) $ans;
+                }
+            }
+
+            try {
+                $strideInfo = $this->strideService->getStridePoolInfo($stride, $poolSize, $strideStrategy, null, $anchorCount);
+                $fullPool = $strideInfo['pool'];
+                sort($fullPool);
+
+                $io->section(sprintf('Wykorzystane losowania kotwiczne (krok N=%d, %d losowań):', $stride, count($strideInfo['anchor_draws'])));
+                foreach ($strideInfo['anchor_draws'] as $ad) {
+                    $io->text(sprintf(' - Losowanie #%d (%s, %d wstecz): %s', $ad['index'], $ad['date'], $ad['stride_back'], implode(', ', $ad['numbers'])));
+                }
+
+                $io->text(sprintf('★ Kotwice (%d): %s', count($strideInfo['anchors']), implode(', ', $strideInfo['anchors'])));
+                $io->text(sprintf('⚡ Sąsiedzi ±1 (%d): %s', count($strideInfo['neighbours']), implode(', ', $strideInfo['neighbours'])));
+                $io->success('Pula Stride (' . count($fullPool) . ' liczb): ' . implode(', ', $fullPool));
+            } catch (\Throwable $e) {
+                $io->error('Błąd pobierania puli Stride: ' . $e->getMessage());
+                return Command::FAILURE;
+            }
         } else {
             $poolOpt = $input->getOption('pool');
             $maxNum = $game['from'] ?? 49;
