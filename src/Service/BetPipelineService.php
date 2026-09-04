@@ -168,10 +168,17 @@ class BetPipelineService
         $varBets = $this->generatorService->generateBalancedShorthand($vars, $slotsForVars, $request->betsTotal);
         shuffle($varBets);
 
+        // Zestawów bankierskich jest tylko C(bankierzy, perBet). Gdy podano
+        // dokładnie tylu bankierów, ilu ma trafić na kupon, kombinacja jest
+        // jedna. Wcześniejsze `min(count(bankerBets), count(varBets))` ucinało
+        // wtedy cały pakiet do 1 zakładu, mimo że liczb zmiennych starczało na
+        // komplet. Bankierów cyklujemy, a zmienne zużywamy pojedynczo.
         $bets = [];
-        $limit = min(count($bankerBets), count($varBets));
+        $bankerCount = count($bankerBets);
+        $limit = min($request->betsTotal, count($varBets));
+
         for ($i = 0; $i < $limit; $i++) {
-            $bet = array_merge($bankerBets[$i], $varBets[$i]);
+            $bet = array_merge($bankerBets[$i % $bankerCount], $varBets[$i]);
             sort($bet);
             if (count(array_unique($bet)) === $pick) {
                 $bets[] = $bet;
