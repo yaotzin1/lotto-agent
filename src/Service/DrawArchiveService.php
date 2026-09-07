@@ -169,6 +169,29 @@ class DrawArchiveService
     }
 
     /**
+     * Ponownie pobiera daty, które zapisały się niekompletne.
+     *
+     * @param callable|null $onProgress fn(int $done, int $total)
+     *
+     * @return array{forgotten: int, added: int, fetched: int, rate_limited: bool, total: int}
+     */
+    public function repair(string $gameType, int $dates, ?callable $onProgress = null): array
+    {
+        $forgotten = $this->drawHistoryProvider->forgetTruncatedDates($gameType);
+        unset($this->memory[$gameType]);
+
+        $result = $this->backfill($gameType, $dates, $onProgress);
+
+        return [
+            'forgotten' => $forgotten,
+            'added' => $result['added'],
+            'fetched' => $result['fetched'],
+            'rate_limited' => $result['rate_limited'],
+            'total' => $result['total'],
+        ];
+    }
+
+    /**
      * Backfill wielu gier jednym przebiegiem po kalendarzu (endpoint `by-date`).
      *
      * @param list<string> $games
@@ -374,30 +397,59 @@ class DrawArchiveService
      */
     private function merge(array $archived, array $projected): array
     {
-        $seen = [];
+        $byDate = [];
         foreach ($archived as $draw) {
-            $seen[$this->signature($draw)] = true;
+            $byDate[$draw['date']][] = $draw;
+        }
+
+        $projectedByDate = [];
+        foreach ($projected as $draw) {
+            $projectedByDate[$draw['date']][] = $draw;
         }
 
         $added = 0;
-        foreach ($projected as $draw) {
-            $signature = $this->signature($draw);
-            if (isset($seen[$signature])) {
+
+        foreach ($projectedByDate as $date => $rows) {
+            $existing = $byDate[$date] ?? [];
+
+            if (count($rows) >= count($existing)) {
+                // Dla dat, które API zna, jest ono źródłem prawdy — i to naprawia
+                // dane obcięte przez dawne `size=50` (Keno ma po 261 losowań
+                // dziennie, w archiwum zostawało 50). Podmiana, a nie dopisanie,
+                // przywraca też właściwą kolejność losowań w obrębie dnia.
+                $added += count($rows) - count($existing);
+                $byDate[$date] = $rows;
                 continue;
             }
 
-            $seen[$signature] = true;
-            $archived[] = $draw;
-            $added++;
+            // Archiwum ma więcej niż API (np. ręczny zasiew historii) — wtedy
+            // tylko dopełniamy brakujące losowania.
+            $seen = [];
+            foreach ($existing as $draw) {
+                $seen[$this->signature($draw)] = true;
+            }
+
+            foreach ($rows as $draw) {
+                if (isset($seen[$this->signature($draw)])) {
+                    continue;
+                }
+
+                $seen[$this->signature($draw)] = true;
+                $byDate[$date][] = $draw;
+                $added++;
+            }
         }
 
-        if ($added > 0) {
-            // usort jest stabilny od PHP 8.0, więc kolejność losowań w obrębie
-            // jednej daty zostaje taka, w jakiej trafiły do listy.
-            usort($archived, static fn(array $a, array $b): int => strcmp($a['date'], $b['date']));
+        ksort($byDate);
+
+        $merged = [];
+        foreach ($byDate as $rows) {
+            foreach ($rows as $draw) {
+                $merged[] = $draw;
+            }
         }
 
-        return [array_values($archived), $added];
+        return [$merged, $added];
     }
 
     /**

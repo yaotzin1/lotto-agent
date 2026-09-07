@@ -77,6 +77,53 @@ class DrawArchiveServiceTest extends TestCase
         $this->assertSame([[11, 12, 13], [31, 32, 33], [21, 22, 23]], $numbers);
     }
 
+    /**
+     * Regresja: dawne `size=50` zapisywało tylko 50 z 261 losowań Keno na dzień.
+     * Gdy API poda dla tej daty komplet, archiwum ma zostać podmienione,
+     * a nie doklejone — inaczej kolejność losowań w obrębie dnia jest zepsuta.
+     */
+    public function testFullerApiDayReplacesTruncatedArchiveDay(): void
+    {
+        $this->writeArchive('Keno', [
+            ['date' => '2026-09-05', 'numbers' => [30, 31, 32]],
+            ['date' => '2026-09-05', 'numbers' => [20, 21, 22]],
+        ]);
+
+        $service = $this->service('Keno', [
+            '2026-09-05' => [
+                ['main' => [10, 11, 12], 'special' => [], 'id' => 1],
+                ['main' => [20, 21, 22], 'special' => [], 'id' => 2],
+                ['main' => [30, 31, 32], 'special' => [], 'id' => 3],
+                ['main' => [40, 41, 42], 'special' => [], 'id' => 4],
+            ],
+        ]);
+
+        $numbers = array_column($service->getChronology('Keno'), 'numbers');
+
+        $this->assertSame(
+            [[10, 11, 12], [20, 21, 22], [30, 31, 32], [40, 41, 42]],
+            $numbers
+        );
+    }
+
+    /**
+     * Odwrotny kierunek: ręczny zasiew historii bywa głębszy niż to, co API
+     * podaje dla danej daty, i nie wolno go zubożyć.
+     */
+    public function testRicherArchiveDayIsOnlyToppedUpNotReplaced(): void
+    {
+        $this->writeArchive('Lotto', [
+            ['date' => '1957-01-27', 'numbers' => [8, 12, 31, 39, 43, 45]],
+            ['date' => '1957-01-27', 'numbers' => [1, 2, 3, 4, 5, 6]],
+        ]);
+
+        $service = $this->service('Lotto', [
+            '1957-01-27' => [['main' => [8, 12, 31, 39, 43, 45], 'special' => [], 'id' => 1]],
+        ]);
+
+        $this->assertCount(2, $service->getChronology('Lotto'));
+    }
+
     public function testDropsNumbersOutsideGameRange(): void
     {
         $service = $this->service('EuroJackpot', [

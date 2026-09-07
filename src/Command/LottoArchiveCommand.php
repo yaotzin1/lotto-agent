@@ -55,6 +55,12 @@ class LottoArchiveCommand extends Command
             'Lista gier po przecinku dla --all-games (domyślnie: ' . implode(',', self::DEFAULT_GAMES) . ')'
         );
         $this->addOption('status', 's', InputOption::VALUE_NONE, 'Tylko pokaż stan archiwów, bez pobierania');
+        $this->addOption(
+            'repair',
+            'r',
+            InputOption::VALUE_NONE,
+            'Pobierz ponownie daty zapisane niekompletnie (gry z wieloma losowaniami dziennie)'
+        );
         $this->addOption('json-output', 'j', InputOption::VALUE_NONE, 'Zwróć wynik w formacie JSON');
     }
 
@@ -102,7 +108,22 @@ class LottoArchiveCommand extends Command
             };
         }
 
-        if ($allGames) {
+        $forgotten = null;
+
+        if ($input->getOption('repair')) {
+            $forgotten = 0;
+            $added = [];
+            $rateLimited = false;
+            $fetched = 0;
+
+            foreach ($games as $game) {
+                $single = $this->drawArchiveService->repair($game, $days, $progress);
+                $forgotten += $single['forgotten'];
+                $added[$game] = $single['added'];
+                $fetched += $single['fetched'];
+                $rateLimited = $rateLimited || $single['rate_limited'];
+            }
+        } elseif ($allGames) {
             $result = $this->drawArchiveService->backfillAllGames(
                 $games,
                 $days,
@@ -129,12 +150,17 @@ class LottoArchiveCommand extends Command
                 'games' => $games,
                 'days' => $days,
                 'dates_fetched' => $fetched,
+                'forgotten' => $forgotten,
                 'added' => $added,
                 'rate_limited' => $rateLimited,
                 'archives' => $this->statusRows($games),
             ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
 
             return Command::SUCCESS;
+        }
+
+        if ($forgotten !== null) {
+            $io->text(sprintf('Dat odrzuconych jako niekompletne: <info>%d</info>', $forgotten));
         }
 
         $io->text(sprintf('Sprawdzonych dat: <info>%d</info>', $fetched));

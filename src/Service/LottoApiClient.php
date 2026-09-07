@@ -13,6 +13,16 @@ class LottoApiClient
 {
     private const LOTTO_API_BASE = 'https://developers.lotto.pl/api/open/v1';
 
+    /**
+     * Ile losowań z JEDNEJ daty prosimy naraz.
+     *
+     * Nie każda gra ma jedno losowanie dziennie: Keno i Szybkie 600 mają ich
+     * ponad 250. Dawne `size=50` ucinało 211 z 261 losowań Keno na każdy dzień
+     * i nikt się o tym nie dowiadywał. API zwraca tyle, ile faktycznie jest,
+     * więc zapas jest darmowy.
+     */
+    private const RESULTS_PAGE_SIZE = 1000;
+
     public function __construct(
         private readonly HttpClientInterface $httpClient,
         private readonly LoggerInterface $logger,
@@ -165,10 +175,11 @@ class LottoApiClient
         }
 
         $url = sprintf(
-            '%s/lotteries/draw-results/by-date-per-game?gameType=%s&drawDate=%s&sort=drawDate&order=DESC&index=1&size=50',
+            '%s/lotteries/draw-results/by-date-per-game?gameType=%s&drawDate=%s&sort=drawDate&order=DESC&index=1&size=%d',
             self::LOTTO_API_BASE,
             rawurlencode($gameType),
-            rawurlencode($date)
+            rawurlencode($date),
+            self::RESULTS_PAGE_SIZE
         );
 
         try {
@@ -347,14 +358,27 @@ class LottoApiClient
         }
 
         try {
-            return [
-                'ok' => true,
-                'rate_limited' => false,
-                'draws' => $this->extractDraws($response->toArray(), $gameType),
-            ];
+            $payload = $response->toArray();
         } catch (\Throwable) {
             return ['ok' => false, 'rate_limited' => false, 'draws' => []];
         }
+
+        $items = is_array($payload['items'] ?? null) ? $payload['items'] : [];
+        $total = (int) ($payload['totalRows'] ?? count($items));
+
+        if ($total > count($items)) {
+            $this->logger->warning('LOTTO API zwróciło niepełną listę losowań dla daty', [
+                'game' => $gameType,
+                'total_rows' => $total,
+                'received' => count($items),
+            ]);
+        }
+
+        return [
+            'ok' => true,
+            'rate_limited' => false,
+            'draws' => $this->extractDraws($payload, $gameType),
+        ];
     }
 
     /**

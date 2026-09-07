@@ -134,6 +134,21 @@ docker compose run --rm app php bin/console app:lotto-archive --all-games --days
 docker compose run --rm app php bin/console app:lotto-archive --all-games --games=Lotto,MiniLotto --days=400
 ```
 
+Verified against the live API for every registered game: Mini Lotto, Lotto, Lotto Plus, EuroJackpot,
+Multi Multi, Ekstra Pensja, Ekstra Premia, Kaskada, Keno and Szybkie 600 all return draws whose count
+and number range match the registry. Zaklady Specjalne is a valid game type but has not been drawn
+since 2024-10-05, so a recent window finds nothing for it.
+
+```bash
+# Refetch dates that were stored incomplete (see below):
+docker compose run --rm app php bin/console app:lotto-archive --game=Keno --days=35 --repair
+```
+
+**Games with many draws per day.** Keno and Szybkie 600 run about 261 draws *per day*, not one.
+Requests used to ask for 50 results per date, so 211 of those 261 were dropped and the date was then
+marked as fetched and never revisited. The page size now covers a full day, the archive treats the API
+as authoritative for any date it knows, and `--repair` refetches dates that were stored short.
+
 The API's rate limit applies to **concurrency, not volume**: measured against the live API, 80 sequential
 requests pass in 66 s without a single HTTP 429, while 8 parallel ones are throttled at the eighth.
 Fetching is therefore sequential, and a 429 means back off and retry that date rather than abandon the

@@ -341,6 +341,57 @@ class DrawHistoryProvider
     }
 
     /**
+     * Ile losowań na datę zwracała dawna, zbyt mała strona wyników.
+     *
+     * Dopóki zapytanie szło z `size=50`, gry o wielu losowaniach dziennie
+     * (Keno, Szybkie 600 — po ponad 250) zapisywały się w cache'u obcięte do 50,
+     * a data zostawała oznaczona jako sprawdzona i nigdy już nie była pobierana.
+     */
+    private const LEGACY_TRUNCATED_PAGE_SIZE = 50;
+
+    /**
+     * Zapomina daty, które wyglądają na obcięte przez dawny rozmiar strony,
+     * żeby zwykła ścieżka pobierania mogła je uzupełnić.
+     *
+     * Data z dokładnie 50 losowaniami przy grze, która miewa ich więcej, jest
+     * niemal na pewno pozostałością po `size=50`. Ponowne pobranie takiej daty
+     * kosztuje jedno zapytanie i w najgorszym razie zapisze te same 50 losowań.
+     */
+    public function forgetTruncatedDates(string $gameType): int
+    {
+        $store = $this->load($gameType);
+
+        $maxSeen = 0;
+        foreach ($store as $entries) {
+            if (is_array($entries)) {
+                $maxSeen = max($maxSeen, count($entries));
+            }
+        }
+
+        if ($maxSeen <= self::LEGACY_TRUNCATED_PAGE_SIZE) {
+            return 0;
+        }
+
+        $forgotten = 0;
+        foreach ($store as $date => $entries) {
+            if (is_array($entries) && count($entries) === self::LEGACY_TRUNCATED_PAGE_SIZE) {
+                unset($store[$date]);
+                $forgotten++;
+            }
+        }
+
+        if ($forgotten > 0) {
+            $this->save($gameType, $store);
+            $this->logger->info('Odrzucono daty obcięte przez dawny rozmiar strony wyników', [
+                'game' => $gameType,
+                'dates' => $forgotten,
+            ]);
+        }
+
+        return $forgotten;
+    }
+
+    /**
      * Surowy magazyn kluczowany datą: {"2026-09-01": [{main, special, id}, ...]}.
      *
      * Potrzebny DrawArchiveService, który rzutuje go na listę chronologiczną.

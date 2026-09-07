@@ -27,7 +27,7 @@ statystyczną i nigdy nie jest tak opisywana.
 |---|---|---|
 | `app:lotto-agent` | `src/Command/LottoAgentCommand.php` | Uruchamia pętlę ReAct i zwraca **pulę kandydującą**. Nie generuje kuponów. |
 | `app:lotto-stride` | `src/Command/LottoStrideCommand.php` | Generator stroboskopowy: pobiera kotwice co N losowań wstecz (np. N=257) + sąsiadów i generuje zakłady. Świadomy gry (`--game`), przed zbudowaniem puli domyka archiwum z LOTTO OpenAPI (`--no-refresh` wyłącza). |
-| `app:lotto-archive` | `src/Command/LottoArchiveCommand.php` | Buduje i pokazuje archiwum losowań. `--status` pokazuje stan bez sieci, `--game=X --days=N` domyka jedną grę, `--all-games` zasila wiele gier jednym zapytaniem na dzień. |
+| `app:lotto-archive` | `src/Command/LottoArchiveCommand.php` | Buduje i pokazuje archiwum losowań. `--status` pokazuje stan bez sieci, `--game=X --days=N` domyka jedną grę, `--all-games` zasila wiele gier jednym zapytaniem na dzień, `--repair` pobiera ponownie daty zapisane niekompletnie. |
 | `app:lotto-backtest` | `src/Command/LottoBacktestCommand.php` | Backtest kroczeń (stride sampling N) i sąsiadów na pełnym archiwum wybranej gry (`--game`). Rozkład hipergeometryczny liczony z zakresu liczb i liczby losowanych kul TEJ gry. |
 | `app:lotto-generator` | `src/Command/LottoGeneratorCommand.php` | Zamienia pulę (ręczną lub z AI) na kupony w jednym z 8 trybów. |
 | `app:lotto-stats` | `src/Command/LottoStatsCommand.php` | Okno statystyczne: rozwodnienie, macierz par, rozkład sum, ranking kuponów. |
@@ -51,6 +51,11 @@ po kolei przechodzi w 66 s bez jednego 429, 8 równoległych dostaje 429 przy ó
 wejściu w limit API wraca po ok. 22 s. Wcześniejsza wersja strzelała ósemkami równolegle
 i przerywała przebieg po pierwszym 429, przez co historia głębsza niż kilkadziesiąt losowań
 nigdy nie powstawała. Głęboką historię dowolnej gry buduje dziś `app:lotto-archive`.
+
+Nie każda gra ma jedno losowanie dziennie: Keno i Szybkie 600 mają ich po ok. 261. Zapytanie
+szło z `size=50`, więc 211 z 261 losowań Keno przepadało, a data i tak zostawała oznaczona
+jako sprawdzona. Rozmiar strony obejmuje dziś pełny dzień, dla znanych sobie dat API jest
+źródłem prawdy przy scalaniu, a `--repair` pobiera ponownie daty zapisane niekompletnie.
 
 Głęboką historię Lotto od 1957 zasiewa dodatkowo `scripts/parse_history.php` z ręcznie
 pobranego pliku tekstowego. Skrypt **scala**, a nie nadpisuje: nie kasuje losowań z API.
