@@ -21,3 +21,11 @@
 /phpunit.xml
 /.phpunit.cache/
 ###< phpunit/phpunit ###
+
+###> archiwum losowan ###
+# Archiwa gier innych niz Lotto sa odtwarzalne z API komenda app:lotto-archive.
+# data/lotto_draws.json zostaje w repo: to reczny zasiew historii od 1957,
+# ktorego z API odtworzyc sie nie da.
+/data/draws/
+/data/raw_download.txt
+###< archiwum losowan ###

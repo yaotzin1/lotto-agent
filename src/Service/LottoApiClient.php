@@ -189,12 +189,141 @@ class LottoApiClient
     }
 
     /**
+     * Zleca pobranie wyników WSZYSTKICH gier dla jednej daty.
+     *
+     * Endpoint `by-date` nie przyjmuje gameType i zwraca komplet losowań z tego
+     * dnia (Lotto, MiniLotto, Multi Multi, Keno...). Jedno zapytanie zasila więc
+     * archiwa wszystkich gier naraz — przy budowaniu historii kilku gier jest to
+     * wielokrotnie taniej niż `by-date-per-game` osobno dla każdej z nich.
+     * Ceną jest rozmiar odpowiedzi (ok. 170 kB na dzień, głównie Keno).
+     */
+    public function requestAllGamesForDate(string $date): ?ResponseInterface
+    {
+        if (trim($this->lottoApiKey) === '') {
+            return null;
+        }
+
+        $url = sprintf(
+            '%s/lotteries/draw-results/by-date?drawDate=%s',
+            self::LOTTO_API_BASE,
+            rawurlencode($date)
+        );
+
+        try {
+            return $this->httpClient->request('GET', $url, [
+                'headers' => [
+                    'secret' => trim($this->lottoApiKey),
+                    'accept' => 'application/json',
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            $this->logger->warning('Nie udało się zlecić pobrania losowań dla daty', [
+                'date' => $date,
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
+    /**
+     * @return array{ok: bool, rate_limited: bool, by_game: array<string, array<int, array{main: array<int>, special: array<int>, id: ?int}>>}
+     */
+    public function resolveAllGamesResponse(ResponseInterface $response): array
+    {
+        try {
+            $status = $response->getStatusCode();
+        } catch (\Throwable) {
+            return ['ok' => false, 'rate_limited' => false, 'by_game' => []];
+        }
+
+        if ($status === 429) {
+            return ['ok' => false, 'rate_limited' => true, 'by_game' => []];
+        }
+
+        // 404 = tego dnia nie było żadnego losowania. Poprawna, ostateczna odpowiedź.
+        if ($status === 404) {
+            return ['ok' => true, 'rate_limited' => false, 'by_game' => []];
+        }
+
+        if ($status !== 200) {
+            return ['ok' => false, 'rate_limited' => false, 'by_game' => []];
+        }
+
+        try {
+            return [
+                'ok' => true,
+                'rate_limited' => false,
+                'by_game' => $this->extractDrawsByGame($response->toArray()),
+            ];
+        } catch (\Throwable) {
+            return ['ok' => false, 'rate_limited' => false, 'by_game' => []];
+        }
+    }
+
+    /**
+     * Rozdziela odpowiedź `by-date` na losowania poszczególnych gier.
+     *
+     * Jedna grupa potrafi zawierać wyniki kilku gier naraz (grupa "Lotto" niesie
+     * też LottoPlus), więc grą jest to, co stoi przy KONKRETNYM wyniku.
+     *
+     * @return array<string, array<int, array{main: array<int>, special: array<int>, id: ?int}>>
+     */
+    public function extractDrawsByGame(array $payload): array
+    {
+        $items = $payload['items'] ?? $payload['content'] ?? $payload['draws'] ?? $payload;
+        if (!is_array($items)) {
+            return [];
+        }
+
+        $byGame = [];
+        $seen = [];
+
+        foreach ($items as $item) {
+            if (!is_array($item) || !isset($item['results']) || !is_array($item['results'])) {
+                continue;
+            }
+
+            foreach ($item['results'] as $r) {
+                if (!is_array($r) || !isset($r['gameType'], $r['resultsJson']) || !is_array($r['resultsJson'])) {
+                    continue;
+                }
+
+                $game = (string) $r['gameType'];
+                $rawId = $r['drawSystemId'] ?? null;
+                $id = (is_int($rawId) || (is_string($rawId) && ctype_digit($rawId))) ? (int) $rawId : null;
+
+                if ($id !== null) {
+                    $sig = $game . ':' . $id;
+                    if (isset($seen[$sig])) {
+                        continue;
+                    }
+                    $seen[$sig] = true;
+                }
+
+                $main = $this->toIntList($r['resultsJson']);
+                if (count($main) < 2) {
+                    continue;
+                }
+
+                $byGame[$game][] = [
+                    'main' => $main,
+                    'special' => $this->toIntList(is_array($r['specialResults'] ?? null) ? $r['specialResults'] : []),
+                    'id' => $id,
+                ];
+            }
+        }
+
+        return $byGame;
+    }
+
+    /**
      * Zamienia odpowiedź na losowania, rozróżniając trzy sytuacje:
      *  - ok=true            : data sprawdzona (lista może być pusta = brak losowania)
      *  - rate_limited=true  : HTTP 429, trzeba przerwać dociąganie
      *  - ok=false           : inny błąd, datę można spróbować później
      *
-     * @return array{ok: bool, rate_limited: bool, draws: array<int, array{main: array<int>, special: array<int>}>}
+     * @return array{ok: bool, rate_limited: bool, draws: array<int, array{main: array<int>, special: array<int>, id: ?int}>}
      */
     public function resolveDrawsResponse(ResponseInterface $response, string $gameType): array
     {
@@ -231,7 +360,7 @@ class LottoApiClient
     /**
      * Wyciąga losowania z odpowiedzi API, tolerując kilka wariantów kształtu.
      *
-     * @return array<int, array{main: array<int>, special: array<int>}>
+     * @return array<int, array{main: array<int>, special: array<int>, id: ?int}>
      */
     public function extractDraws(array $payload, ?string $gameType = null): array
     {
@@ -267,22 +396,27 @@ class LottoApiClient
                         }
                         $seenDrawIds[$sig] = true;
                     }
-                    $candidates[] = [$r['resultsJson'], $r['specialResults'] ?? []];
+                    $candidates[] = [$r['resultsJson'], $r['specialResults'] ?? [], $drawId];
                 }
             }
 
             foreach (['resultsJson', 'numbers', 'winningNumbers'] as $key) {
                 if (isset($item[$key]) && is_array($item[$key])) {
-                    $candidates[] = [$item[$key], $item['specialResults'] ?? []];
+                    $candidates[] = [$item[$key], $item['specialResults'] ?? [], $item['drawSystemId'] ?? null];
                 }
             }
 
             foreach ($candidates as $pair) {
                 $clean = $this->toIntList(is_array($pair[0]) ? $pair[0] : []);
                 if (count($clean) >= 2) {
+                    // `id` (drawSystemId) jest jedynym pewnym porządkiem w obrębie
+                    // jednej daty — Multi Multi i Keno mają po kilkanaście losowań
+                    // dziennie, a API zwraca je malejąco.
+                    $rawId = $pair[2] ?? null;
                     $draws[] = [
                         'main' => $clean,
                         'special' => $this->toIntList(is_array($pair[1]) ? $pair[1] : []),
+                        'id' => (is_int($rawId) || (is_string($rawId) && ctype_digit($rawId))) ? (int) $rawId : null,
                     ];
                 }
             }

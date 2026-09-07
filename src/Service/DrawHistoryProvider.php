@@ -10,21 +10,51 @@ use Symfony\Component\DependencyInjection\Attribute\Autowire;
 /**
  * Trwały, przyrostowy magazyn wyników losowań.
  *
- * LOTTO OpenAPI nie ma endpointu z zakresem dat dla wyników — jedyny działający
- * to `by-date-per-game` dla POJEDYNCZEJ daty. Pobranie 100 losowań to więc 100
- * zapytań, co bardzo szybko kończy się odpowiedzią **HTTP 429 (Too Many Requests)**
- * i pustą historią.
+ * LOTTO OpenAPI nie ma endpointu z zakresem dat dla wyników — działają wyłącznie
+ * `by-date-per-game` (jedna data, jedna gra) i `by-date` (jedna data, wszystkie
+ * gry). Pobranie 100 losowań to więc 100 zapytań.
  *
- * Dlatego historia jest zapisywana na dysku i przy kolejnych uruchomieniach
- * dociągane są wyłącznie BRAKUJĄCE daty. Typowy drugi przebieg = zero zapytań.
+ * Limit API dotyczy WSPÓŁBIEŻNOŚCI, nie liczby zapytań: sekwencyjnie przechodzi
+ * ich dowolnie dużo, kilka równolegle kończy się HTTP 429. Wcześniejsza wersja
+ * strzelała ósemkami równolegle, dostawała 429 i PRZERYWAŁA cały przebieg —
+ * dlatego historia głębsza niż kilkadziesiąt losowań nigdy nie powstawała.
+ * Teraz pobieramy po kolei, a 429 oznacza wycofanie i ponowienie daty.
+ *
+ * Historia jest zapisywana na dysku i przy kolejnych uruchomieniach dociągane są
+ * wyłącznie BRAKUJĄCE daty. Typowy drugi przebieg = zero zapytań. Generator ma
+ * mały budżet zapytań (MAX_NEW_DATES_PER_RUN), żeby nie kazać użytkownikowi
+ * czekać; głęboką historię buduje komenda `app:lotto-archive`.
  */
 class DrawHistoryProvider
 {
     /** Ile dat pobieramy maksymalnie w JEDNYM uruchomieniu (reszta doczyta się później). */
-    private const MAX_NEW_DATES_PER_RUN = 25;
+    public const MAX_NEW_DATES_PER_RUN = 25;
 
-    /** Ile zapytań leci równolegle. */
-    private const BATCH_SIZE = 8;
+    /** Górna granica okna dat, o jakie można poprosić naraz. */
+    private const MAX_LIMIT = 4000;
+
+    /**
+     * Ile zapytań leci naraz.
+     *
+     * Pomiar na żywym API (wrzesień 2026): 80 zapytań PO KOLEI przeszło w 66 s
+     * bez jednego HTTP 429, natomiast 8 równoległych wywoływało 429 już przy
+     * ósmym, a 3 równoległe przy trzydziestym. Limit dotyczy WSPÓŁBIEŻNOŚCI,
+     * nie liczby zapytań — dlatego pobieramy sekwencyjnie. Czas odpowiedzi
+     * (ok. 0,8 s) sam w sobie wystarcza za odstęp.
+     */
+    private const REQUEST_CONCURRENCY = 1;
+
+    /** Dodatkowy odstęp między zapytaniami (mikrosekundy). */
+    private const REQUEST_DELAY_US = 100000;
+
+    /** Ile razy ponawiamy datę odrzuconą przez 429, zanim się poddamy. */
+    private const MAX_RATE_LIMIT_RETRIES = 4;
+
+    /**
+     * Bazowe wycofanie po 429 (mikrosekundy); rośnie wykładniczo.
+     * Pomiar: po wejściu w limit API wraca do odpowiadania po ok. 22 s.
+     */
+    private const RATE_LIMIT_BACKOFF_US = 20000000;
 
     /** @var array<string, array<string, array{main: array<int>, special: array<int>}>> */
     private array $memory = [];
@@ -34,11 +64,17 @@ class DrawHistoryProvider
         private readonly GameRegistryService $gameRegistryService,
         private readonly LoggerInterface $logger,
         #[Autowire('%kernel.project_dir%/var/draw-history')]
-        private readonly string $storageDir
+        private readonly string $storageDir,
+        /** Wstrzykiwane, żeby testy nie musiały naprawdę czekać na wycofanie. */
+        private readonly int $rateLimitBackoffUs = self::RATE_LIMIT_BACKOFF_US
     ) {
     }
 
     /**
+     * @param int|null $maxNewDates budżet nowych zapytań na ten przebieg;
+     *                              null = domyślne 25 (tryb interaktywny)
+     * @param callable|null $onProgress wywoływane jako fn(int $done, int $total)
+     *
      * @return array{
      *     draws: array<int, array{main: array<int>, special: array<int>}>,
      *     from_cache: int,
@@ -47,9 +83,14 @@ class DrawHistoryProvider
      *     missing: int
      * }
      */
-    public function getHistory(string $gameType, int $limit): array
-    {
-        $limit = max(1, min($limit, 400));
+    public function getHistory(
+        string $gameType,
+        int $limit,
+        ?int $maxNewDates = null,
+        ?callable $onProgress = null
+    ): array {
+        $limit = max(1, min($limit, self::MAX_LIMIT));
+        $budget = max(0, $maxNewDates ?? self::MAX_NEW_DATES_PER_RUN);
         $wanted = $this->drawDates($gameType, $limit);
         $store = $this->load($gameType);
 
@@ -62,14 +103,14 @@ class DrawHistoryProvider
         $fetched = 0;
         $rateLimited = false;
 
-        // Świadomy limit na jeden przebieg: przy pustym cache'u pobranie 200 dat
-        // i tak skończyłoby się blokadą 429.
-        $toFetch = array_slice($missingDates, 0, self::MAX_NEW_DATES_PER_RUN);
+        // Domyślnie świadomie mały budżet: w trybie interaktywnym nie chcemy
+        // czekać na setki zapytań. Backfill podaje własny, znacznie większy.
+        $queue = array_slice($missingDates, 0, $budget);
+        $total = count($queue);
+        $retries = 0;
 
-        foreach (array_chunk($toFetch, self::BATCH_SIZE) as $batch) {
-            if ($rateLimited) {
-                break;
-            }
+        while ($queue !== [] && !$rateLimited) {
+            $batch = array_splice($queue, 0, self::REQUEST_CONCURRENCY);
 
             $responses = [];
             foreach ($batch as $date) {
@@ -79,23 +120,21 @@ class DrawHistoryProvider
                 }
             }
 
+            $throttled = [];
             foreach ($responses as $date => $response) {
-                if ($rateLimited) {
+                if ($throttled !== []) {
                     // KLUCZOWE: niezużyta odpowiedź 4xx rzuca wyjątek w destruktorze
                     // Symfony HttpClient i wywraca cały proces. Musi zostać anulowana.
                     $this->cancelQuietly($response);
+                    $throttled[] = $date;
                     continue;
                 }
 
                 $result = $this->lottoApiClient->resolveDrawsResponse($response, $gameType);
 
                 if ($result['rate_limited']) {
-                    $rateLimited = true;
                     $this->cancelQuietly($response);
-                    $this->logger->warning('LOTTO API: limit zapytań (429). Przerywam dociąganie historii.', [
-                        'game' => $gameType,
-                        'fetched_before_limit' => $fetched,
-                    ]);
+                    $throttled[] = $date;
                     continue;
                 }
 
@@ -104,7 +143,43 @@ class DrawHistoryProvider
                 if ($result['ok']) {
                     $store[$date] = $result['draws'];
                     $fetched++;
+                    if ($onProgress !== null) {
+                        $onProgress($fetched, $total);
+                    }
                 }
+            }
+
+            if ($throttled !== []) {
+                // 429 to prośba o zwolnienie, a nie koniec pracy: daty wracają
+                // do kolejki po wycofaniu. Dawna wersja przerywała cały przebieg,
+                // przez co historia głębsza niż kilkadziesiąt losowań nigdy nie
+                // powstawała.
+                $retries++;
+
+                if ($retries > self::MAX_RATE_LIMIT_RETRIES) {
+                    $rateLimited = true;
+                    $this->logger->warning('LOTTO API: limit zapytań (429) mimo wycofań. Przerywam dociąganie historii.', [
+                        'game' => $gameType,
+                        'fetched_before_limit' => $fetched,
+                    ]);
+                    break;
+                }
+
+                $this->logger->info('LOTTO API: HTTP 429, wycofanie i ponowienie paczki.', [
+                    'game' => $gameType,
+                    'attempt' => $retries,
+                    'dates' => count($throttled),
+                ]);
+
+                usleep($this->rateLimitBackoffUs * (2 ** ($retries - 1)));
+                $queue = array_merge($throttled, $queue);
+                continue;
+            }
+
+            $retries = 0;
+
+            if ($queue !== []) {
+                usleep(self::REQUEST_DELAY_US);
             }
         }
 
@@ -126,6 +201,157 @@ class DrawHistoryProvider
             'rate_limited' => $rateLimited,
             'missing' => max(0, count($missingDates) - $fetched),
         ];
+    }
+
+    /**
+     * Buduje historię WSZYSTKICH podanych gier jednym przebiegiem po kalendarzu.
+     *
+     * Endpoint `by-date` zwraca komplet losowań z danego dnia, więc jedno
+     * zapytanie zasila naraz Lotto, MiniLotto, Multi Multi i resztę. Dla kogoś,
+     * kto gra w kilka gier, jest to jedyny sensowny sposób zbudowania głębokiej
+     * historii: osobne `by-date-per-game` kosztowałoby tyle zapytań, ile gier.
+     *
+     * @param list<string> $games
+     * @param callable|null $onProgress fn(int $done, int $total, string $date)
+     *
+     * @return array{dates_checked: int, dates_fetched: int, rate_limited: bool, per_game: array<string, int>}
+     */
+    public function backfillAllGames(int $days, array $games, ?callable $onProgress = null): array
+    {
+        $days = max(1, min($days, self::MAX_LIMIT));
+        $games = array_values(array_unique(array_filter($games, [$this->gameRegistryService, 'isValidGame'])));
+
+        if ($games === []) {
+            return ['dates_checked' => 0, 'dates_fetched' => 0, 'rate_limited' => false, 'per_game' => []];
+        }
+
+        $stores = [];
+        foreach ($games as $game) {
+            $stores[$game] = $this->load($game);
+        }
+
+        // Data jest do pobrania, jeżeli BRAKUJE jej w archiwum choć jednej gry.
+        $queue = [];
+        $cursor = new \DateTimeImmutable('today');
+        for ($i = 0; $i < $days; $i++) {
+            $date = $cursor->modify("-$i day")->format('Y-m-d');
+            foreach ($games as $game) {
+                if (!array_key_exists($date, $stores[$game])) {
+                    $queue[] = $date;
+                    break;
+                }
+            }
+        }
+
+        $total = count($queue);
+        $done = 0;
+        $fetched = 0;
+        $rateLimited = false;
+        $retries = 0;
+        $perGame = array_fill_keys($games, 0);
+
+        while ($queue !== [] && !$rateLimited) {
+            $batch = array_splice($queue, 0, self::REQUEST_CONCURRENCY);
+
+            $responses = [];
+            foreach ($batch as $date) {
+                $r = $this->lottoApiClient->requestAllGamesForDate($date);
+                if ($r === null) {
+                    // Brak klucza API — dalsze próby nie mają sensu.
+                    return [
+                        'dates_checked' => $total,
+                        'dates_fetched' => $fetched,
+                        'rate_limited' => false,
+                        'per_game' => $perGame,
+                    ];
+                }
+                $responses[$date] = $r;
+            }
+
+            $throttled = [];
+            foreach ($responses as $date => $response) {
+                if ($throttled !== []) {
+                    $this->cancelQuietly($response);
+                    $throttled[] = $date;
+                    continue;
+                }
+
+                $result = $this->lottoApiClient->resolveAllGamesResponse($response);
+
+                if ($result['rate_limited']) {
+                    $this->cancelQuietly($response);
+                    $throttled[] = $date;
+                    continue;
+                }
+
+                if (!$result['ok']) {
+                    continue;
+                }
+
+                foreach ($games as $game) {
+                    $draws = $result['by_game'][$game] ?? [];
+                    $stores[$game][$date] = $draws;
+                    $perGame[$game] += count($draws);
+                }
+
+                $fetched++;
+                $done++;
+
+                if ($onProgress !== null) {
+                    $onProgress($done, $total, $date);
+                }
+            }
+
+            if ($throttled !== []) {
+                $retries++;
+
+                if ($retries > self::MAX_RATE_LIMIT_RETRIES) {
+                    $rateLimited = true;
+                    break;
+                }
+
+                usleep($this->rateLimitBackoffUs * (2 ** ($retries - 1)));
+                $queue = array_merge($throttled, $queue);
+                continue;
+            }
+
+            $retries = 0;
+
+            // Zapis co paczkę: backfill setek dni bywa przerywany, a stracona
+            // praca oznacza ponowne odpytywanie API o te same daty.
+            foreach ($games as $game) {
+                $this->save($game, $stores[$game]);
+            }
+
+            if ($queue !== []) {
+                usleep(self::REQUEST_DELAY_US);
+            }
+        }
+
+        foreach ($games as $game) {
+            $this->save($game, $stores[$game]);
+        }
+
+        return [
+            'dates_checked' => $total,
+            'dates_fetched' => $fetched,
+            'rate_limited' => $rateLimited,
+            'per_game' => $perGame,
+        ];
+    }
+
+    /**
+     * Surowy magazyn kluczowany datą: {"2026-09-01": [{main, special, id}, ...]}.
+     *
+     * Potrzebny DrawArchiveService, który rzutuje go na listę chronologiczną.
+     * Sam getHistory() zwraca już spłaszczone losowania bez dat, więc nie da się
+     * z niego odtworzyć porządku wymaganego przez kroczenie.
+     *
+     * @return array<string, array<int, array{main: array<int>, special: array<int>, id?: ?int}>>
+     */
+    public function getDatedStore(string $gameType): array
+    {
+        return $this->load($gameType);
     }
 
     /**

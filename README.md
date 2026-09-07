@@ -101,15 +101,54 @@ docker compose run --rm app php bin/console app:lotto-stride --stride=257 --pool
 
 # Stride 127 with multi-anchor history (T-127, T-254):
 docker compose run --rm app php bin/console app:lotto-stride --stride=127 --strategy=multi_anchor --bets=10
+
+# Any registered game - the pool is built from THAT game's draws and number range:
+docker compose run --rm app php bin/console app:lotto-stride --game=EuroJackpot --stride=50 --pool-size=14
+
+# Skip the LOTTO OpenAPI top-up and use the on-disk archive as-is:
+docker compose run --rm app php bin/console app:lotto-stride --stride=257 --no-refresh
 ```
 
-### 4. Historical Stride Backtester (`app:lotto-backtest`)
-Empirical backtesting of stride sampling across all 7,399 historical Lotto draws:
+**Where the draws come from.** Stride addresses draws by *position* (T-N, T-2N...), so it needs an
+unbroken chronological index. The official API has no date-range results endpoint - only `by-date-per-game`
+(one date, one game) and `by-date` (one date, every game) - so history is built one request per date and
+cached. `DrawArchiveService` keeps a per-game archive on disk, projects the API cache
+(`var/draw-history/<Game>.json`) onto it on every run and appends anything new. The archive lives in
+`data/lotto_draws.json` for Lotto and `data/draws/<Game>.json` for every other game.
+
+Because a missing draw shifts *every* anchor by the same amount, the command reports how many draws
+the archive is behind the draw calendar and warns instead of silently sampling the wrong rows.
+
+### 4. Draw Archive Builder (`app:lotto-archive`)
+The generator only tops up the last few dates so it never keeps you waiting. Building history hundreds
+of draws deep - which is what a stride of 127 or 257 actually needs - is this command's job:
+```bash
+# Show what each archive holds, without touching the network:
+docker compose run --rm app php bin/console app:lotto-archive --status --all-games
+
+# Build ~300 days of Mini Lotto history (one request per date, resumable):
+docker compose run --rm app php bin/console app:lotto-archive --game=MiniLotto --days=300
+
+# Fill several games at once - `by-date` returns every game, so it is one request per DAY, not per game:
+docker compose run --rm app php bin/console app:lotto-archive --all-games --days=400
+docker compose run --rm app php bin/console app:lotto-archive --all-games --games=Lotto,MiniLotto --days=400
+```
+
+The API's rate limit applies to **concurrency, not volume**: measured against the live API, 80 sequential
+requests pass in 66 s without a single HTTP 429, while 8 parallel ones are throttled at the eighth.
+Fetching is therefore sequential, and a 429 means back off and retry that date rather than abandon the
+run. Every fetched date is cached, so an interrupted backfill simply resumes where it stopped.
+
+### 5. Historical Stride Backtester (`app:lotto-backtest`)
+Empirical backtesting of stride sampling across the full archive of a chosen game:
 ```bash
 docker compose run --rm app php bin/console app:lotto-backtest --pool-size=12 --strides="1,2,7,30,50,127,257,500"
+
+# Other games use their own number range and drawn-count for the hypergeometric baseline:
+docker compose run --rm app php bin/console app:lotto-backtest --game=EuroJackpot --pool-size=12 --strides="1,50"
 ```
 
-### 5. Generator Suite (`app:lotto-generator`)
+### 6. Generator Suite (`app:lotto-generator`)
 ```bash
 # Run generator with Statistical Optimization mode (Mode 7):
 docker compose run --rm app php bin/console app:lotto-generator --game=Lotto --pool-mode=Manual --mode=7 --bets=100
@@ -118,7 +157,7 @@ docker compose run --rm app php bin/console app:lotto-generator --game=Lotto --p
 docker compose run --rm app php bin/console app:lotto-generator --game=Lotto --pool-mode=AI --strategy=syndicate --mode=5
 ```
 
-### 6. ReAct Agent AI (`app:lotto-agent`)
+### 7. ReAct Agent AI (`app:lotto-agent`)
 ```bash
 docker compose run --rm app php bin/console app:lotto-agent --game=Lotto --strategy=syndicate --sessions=15
 ```

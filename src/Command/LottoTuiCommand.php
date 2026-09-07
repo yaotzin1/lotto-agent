@@ -288,8 +288,15 @@ class LottoTuiCommand extends Command
             if ($poolSizeOpt && is_numeric($poolSizeOpt) && (int) $poolSizeOpt >= $game['pick']) {
                 $poolSize = (int) $poolSizeOpt;
             } else {
-                $poolSize = (int) $this->promptInput("Ile liczb ma zawierać pula Stride? (rekomendowane: 12 dla 6/49)", '12');
+                $poolSize = (int) $this->promptInput(sprintf(
+                    'Ile liczb ma zawierać pula Stride? (gra %s: %d z %d, rekomendowane: %d)',
+                    $gameType,
+                    $game['pick'],
+                    $game['from'],
+                    min((int) $game['from'], 2 * (int) $game['pick'])
+                ), (string) min((int) $game['from'], 2 * (int) $game['pick']));
             }
+            $poolSize = max((int) $game['pick'], min((int) $game['from'], $poolSize));
 
             $anchorsOpt = $input->getOption('anchors');
             $anchorCount = ($anchorsOpt !== null && is_numeric($anchorsOpt))
@@ -297,19 +304,52 @@ class LottoTuiCommand extends Command
                 : null;
 
             if ($strideStrategy === 'multi_anchor' && $anchorCount === null && $input->isInteractive()) {
-                $autoAnchors = max(2, (int) ceil($poolSize / 6));
+                $autoAnchors = $this->strideService->autoAnchorCount($poolSize, $gameType);
                 $ans = $this->promptInput(sprintf('Ile losowań kotwicznych wstecz (kroków N) próbkować? [Enter dla auto: %d]', $autoAnchors), (string) $autoAnchors);
                 if (is_numeric($ans) && (int) $ans > 0) {
                     $anchorCount = (int) $ans;
                 }
             }
 
+            // Archiwum domykamy z oficjalnego LOTTO OpenAPI przed zbudowaniem puli:
+            // kotwice adresują losowania pozycją, więc brakujące losowanie
+            // przesuwa je wszystkie.
+            $refresh = $this->strideService->refreshArchive($gameType);
+            if ($refresh !== null) {
+                if ($refresh['added'] > 0) {
+                    $io->text(sprintf('↻ Archiwum %s uzupełnione o %d nowych losowań z LOTTO OpenAPI.', $gameType, $refresh['added']));
+                }
+                if ($refresh['warning'] !== null) {
+                    $io->warning($refresh['warning']);
+                }
+            }
+
             try {
-                $strideInfo = $this->strideService->getStridePoolInfo($stride, $poolSize, $strideStrategy, null, $anchorCount);
+                $strideInfo = $this->strideService->getStridePoolInfo($stride, $poolSize, $strideStrategy, null, $anchorCount, $gameType);
                 $fullPool = $strideInfo['pool'];
                 sort($fullPool);
 
-                $io->section(sprintf('Wykorzystane losowania kotwiczne (krok N=%d, %d losowań):', $stride, count($strideInfo['anchor_draws'])));
+                $strideFreshness = $strideInfo['freshness'];
+                if ($strideFreshness !== null && $strideFreshness['stale']) {
+                    $io->warning(sprintf(
+                        "Archiwum losowań %s jest nieaktualne: ostatnie losowanie w bazie to %s, a od tego czasu "
+                        . "odbyło się jeszcze %d losowań (ostatnie oczekiwane: %s).\n"
+                        . 'Kotwice T-N liczone są od ostatniego wiersza archiwum, więc wszystkie są przesunięte o tyle samo losowań.',
+                        $gameType,
+                        $strideFreshness['last_date'] ?? 'brak',
+                        $strideFreshness['missing'],
+                        $strideFreshness['expected_date'] ?? 'brak'
+                    ));
+                }
+
+                $io->section(sprintf(
+                    'Wykorzystane losowania kotwiczne (gra %s: %d z %d, krok N=%d, %d losowań):',
+                    $gameType,
+                    $game['pick'],
+                    $game['from'],
+                    $stride,
+                    count($strideInfo['anchor_draws'])
+                ));
                 foreach ($strideInfo['anchor_draws'] as $ad) {
                     $io->text(sprintf(' - Losowanie #%d (%s, %d wstecz): %s', $ad['index'], $ad['date'], $ad['stride_back'], implode(', ', $ad['numbers'])));
                 }

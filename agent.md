@@ -26,12 +26,34 @@ statystyczną i nigdy nie jest tak opisywana.
 | Komenda | Plik | Co robi |
 |---|---|---|
 | `app:lotto-agent` | `src/Command/LottoAgentCommand.php` | Uruchamia pętlę ReAct i zwraca **pulę kandydującą**. Nie generuje kuponów. |
-| `app:lotto-stride` | `src/Command/LottoStrideCommand.php` | Generator stroboskopowy: pobiera kotwice co N losowań wstecz (np. N=257) + sąsiadów i generuje zakłady. |
-| `app:lotto-backtest` | `src/Command/LottoBacktestCommand.php` | Backtest kroczeń (stride sampling N) i sąsiadów na pełnej historii 7,399 losowań. |
+| `app:lotto-stride` | `src/Command/LottoStrideCommand.php` | Generator stroboskopowy: pobiera kotwice co N losowań wstecz (np. N=257) + sąsiadów i generuje zakłady. Świadomy gry (`--game`), przed zbudowaniem puli domyka archiwum z LOTTO OpenAPI (`--no-refresh` wyłącza). |
+| `app:lotto-archive` | `src/Command/LottoArchiveCommand.php` | Buduje i pokazuje archiwum losowań. `--status` pokazuje stan bez sieci, `--game=X --days=N` domyka jedną grę, `--all-games` zasila wiele gier jednym zapytaniem na dzień. |
+| `app:lotto-backtest` | `src/Command/LottoBacktestCommand.php` | Backtest kroczeń (stride sampling N) i sąsiadów na pełnym archiwum wybranej gry (`--game`). Rozkład hipergeometryczny liczony z zakresu liczb i liczby losowanych kul TEJ gry. |
 | `app:lotto-generator` | `src/Command/LottoGeneratorCommand.php` | Zamienia pulę (ręczną lub z AI) na kupony w jednym z 8 trybów. |
 | `app:lotto-stats` | `src/Command/LottoStatsCommand.php` | Okno statystyczne: rozwodnienie, macierz par, rozkład sum, ranking kuponów. |
 | `app:lotto-tui` | `src/Command/LottoTuiCommand.php` | Interaktywny odpowiednik generatora (obsługuje AI, Stride i Manual). |
 | `app:gemini-models` | `src/Command/GeminiModelsCommand.php` | Wypisuje modele dostępne dla klucza API. |
+
+## Skąd biorą się losowania
+
+| Warstwa | Plik | Rola |
+|---|---|---|
+| Oficjalne API | `src/Service/LottoApiClient.php` | LOTTO OpenAPI (`developers.lotto.pl`). Wyniki wyłącznie **dla pojedynczej daty**: `by-date-per-game` (jedna gra) albo `by-date` (wszystkie gry naraz). Endpointu z zakresem dat nie ma — sprawdzone w specyfikacji `swagger/open-api-v1/swagger.json`. |
+| Cache API | `src/Service/DrawHistoryProvider.php` | Przyrostowy magazyn kluczowany datą (`var/draw-history/<Gra>.json`). Pobiera **sekwencyjnie**, a HTTP 429 ponawia po wycofaniu. W trybie interaktywnym budżet to 25 nowych dat; backfill podaje własny. |
+| Archiwum chronologiczne | `src/Service/DrawArchiveService.php` | Rzutuje cache API na listę uporządkowaną w czasie, scala ją z archiwum na dysku (`data/lotto_draws.json` dla Lotto, `data/draws/<Gra>.json` dla reszty) i dopisuje nowe losowania. Zgłasza też, o ile losowań archiwum jest do tyłu. |
+
+Kroczenie adresuje losowania **pozycją** (T-N, T-2N...), więc brakujące losowanie przesuwa
+wszystkie kotwice naraz — dlatego archiwum jest domykane przed zbudowaniem puli, a jego
+nieaktualność jest wypisywana jako ostrzeżenie, a nie przemilczana.
+
+Limit API dotyczy **współbieżności, nie liczby zapytań** — pomiar na żywym API: 80 zapytań
+po kolei przechodzi w 66 s bez jednego 429, 8 równoległych dostaje 429 przy ósmym, a po
+wejściu w limit API wraca po ok. 22 s. Wcześniejsza wersja strzelała ósemkami równolegle
+i przerywała przebieg po pierwszym 429, przez co historia głębsza niż kilkadziesiąt losowań
+nigdy nie powstawała. Głęboką historię dowolnej gry buduje dziś `app:lotto-archive`.
+
+Głęboką historię Lotto od 1957 zasiewa dodatkowo `scripts/parse_history.php` z ręcznie
+pobranego pliku tekstowego. Skrypt **scala**, a nie nadpisuje: nie kasuje losowań z API.
 
 > Nie istnieje `LottoCommand` — wcześniejsza wersja tego pliku opisywała klasę,
 > której nigdy nie było w repozytorium.
