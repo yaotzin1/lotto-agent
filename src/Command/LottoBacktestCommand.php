@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Command;
 
+use App\Service\GameRegistryService;
 use App\Service\StrideBacktestService;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
@@ -15,18 +16,20 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 
 #[AsCommand(
     name: 'app:lotto-backtest',
-    description: 'Backtest hipotezy kroczeń (stride sampling N) i sąsiadów na pełnej historii losowań Lotto',
+    description: 'Backtest hipotezy kroczeń (stride sampling N) i sąsiadów na pełnej historii losowań wybranej gry',
 )]
 class LottoBacktestCommand extends Command
 {
     public function __construct(
-        private readonly StrideBacktestService $backtestService
+        private readonly StrideBacktestService $backtestService,
+        private readonly GameRegistryService $gameRegistryService
     ) {
         parent::__construct();
     }
 
     protected function configure(): void
     {
+        $this->addOption('game', 'g', InputOption::VALUE_REQUIRED, 'Typ gry (np. Lotto, EuroJackpot, MultiMulti)', 'Lotto');
         $this->addOption('pool-size', 'p', InputOption::VALUE_REQUIRED, 'Rozmiar testowanej puli liczb (np. 12)', '12');
         $this->addOption('strides', 's', InputOption::VALUE_REQUIRED, 'Kroczenia do przetestowania, po przecinku (np. "1,2,7,30,50,127,257,500")', '1,2,7,30,50,127,257,500');
         $this->addOption('json-output', 'j', InputOption::VALUE_NONE, 'Zwróć wynik w formacie JSON');
@@ -37,7 +40,14 @@ class LottoBacktestCommand extends Command
         $io = new SymfonyStyle($input, $output);
         $isJson = (bool) $input->getOption('json-output');
 
-        $poolSize = max(6, min(24, (int) $input->getOption('pool-size')));
+        $gameType = (string) $input->getOption('game');
+        if (!$this->gameRegistryService->isValidGame($gameType)) {
+            $io->error("Nieobsługiwany typ gry: $gameType");
+            return Command::FAILURE;
+        }
+
+        $game = $this->gameRegistryService->getGameConfig($gameType);
+        $poolSize = max((int) $game['pick'], min((int) $game['from'] - 1, (int) $input->getOption('pool-size')));
         $stridesStr = (string) $input->getOption('strides');
         $strides = array_values(array_filter(array_map('intval', explode(',', $stridesStr)), static fn(int $s): bool => $s > 0));
 
@@ -52,7 +62,7 @@ class LottoBacktestCommand extends Command
         }
 
         try {
-            $report = $this->backtestService->runBacktest($poolSize, $strides);
+            $report = $this->backtestService->runBacktest($poolSize, $strides, $gameType);
         } catch (\Throwable $e) {
             $io->error('Błąd podczas wykonywania backtestu: ' . $e->getMessage());
             return Command::FAILURE;
@@ -64,7 +74,10 @@ class LottoBacktestCommand extends Command
         }
 
         $io->section(sprintf(
-            'Parametry testu: Pula %d liczb | Przetestowano %d losowań (od %s do %s)',
+            'Parametry testu: Gra %s (%d z %d) | Pula %d liczb | Przetestowano %d losowań (od %s do %s)',
+            $report['game'],
+            $report['drawn_per_draw'],
+            $report['numbers_from'],
             $report['pool_size'],
             $report['draws_evaluated'],
             $report['date_from'],
@@ -72,43 +85,41 @@ class LottoBacktestCommand extends Command
         ));
 
         // Tabela 1: Rozkład trafień
+        // Liczba kolumn zależy od gry: Lotto losuje 6 liczb, Multi Multi 20.
+        $drawn = $report['drawn_per_draw'];
+        $headers = ['Strategia'];
+        for ($k = 0; $k <= $drawn; $k++) {
+            $headers[] = $k === $drawn ? sprintf('%d Traf. (Jackpot)', $k) : sprintf('%d Traf.', $k);
+        }
+        $headers[] = 'Średnia trafień';
+
         $io->section('1. Rozkład trafień liczb z puli w losowaniu docelowym');
         $table = new Table($output);
-        $table->setHeaders(['Strategia', '0 Trafień', '1 Trafienie', '2 Trafienia', '3 Trafienia', '4 Trafienia', '5 Trafień', '6 Trafień (Jackpot)', 'Średnia trafień']);
+        $table->setHeaders($headers);
 
         $theo = $report['theoretical'];
-        $table->addRow([
-            '<info>TEORIA (Czysty RND)</info>',
-            $theo['matches'][0] . '%',
-            $theo['matches'][1] . '%',
-            $theo['matches'][2] . '%',
-            $theo['matches'][3] . '%',
-            $theo['matches'][4] . '%',
-            $theo['matches'][5] . '%',
-            $theo['matches'][6] . '%',
-            sprintf('%.4f', $theo['mean']),
-        ]);
-        $table->addRow(['----------------------------', '-------', '-------', '-------', '-------', '-------', '-------', '-------', '-------']);
+        $theoRow = ['<info>TEORIA (Czysty RND)</info>'];
+        for ($k = 0; $k <= $drawn; $k++) {
+            $theoRow[] = $theo['matches'][$k] . '%';
+        }
+        $theoRow[] = sprintf('%.4f', $theo['mean']);
+        $table->addRow($theoRow);
+        $table->addRow(array_fill(0, count($headers), '-------'));
 
         foreach ($report['results'] as $name => $data) {
-            $table->addRow([
-                $name,
-                $data['match_pct'][0] . '%',
-                $data['match_pct'][1] . '%',
-                $data['match_pct'][2] . '%',
-                $data['match_pct'][3] . '%',
-                $data['match_pct'][4] . '%',
-                $data['match_pct'][5] . '%',
-                $data['match_pct'][6] . '%',
-                sprintf('%.4f', $data['avg_match']),
-            ]);
+            $row = [$name];
+            for ($k = 0; $k <= $drawn; $k++) {
+                $row[] = $data['match_pct'][$k] . '%';
+            }
+            $row[] = sprintf('%.4f', $data['avg_match']);
+            $table->addRow($row);
         }
         $table->render();
 
         // Tabela 2: Odstępy i periodyczność (Odstępy między trafieniami >= 3 liczb)
-        $io->section('2. Analiza periodyczności i odstępów (Dla trafień >= 3 liczb w puli)');
+        $io->section(sprintf('2. Analiza periodyczności i odstępów (dla trafień >= %d liczb w puli)', $report['hit_threshold']));
         $gapTable = new Table($output);
-        $gapTable->setHeaders(['Strategia', 'Średni odstęp (Mean Gap)', 'Odchylenie stand. (StdDev)', 'Maks. posucha (Max Drought)', 'Trafienia 6/6 (Jackpot)']);
+        $gapTable->setHeaders(['Strategia', 'Średni odstęp (Mean Gap)', 'Odchylenie stand. (StdDev)', 'Maks. posucha (Max Drought)', sprintf('Trafienia %d/%d (Jackpot)', $drawn, $drawn)]);
 
         foreach ($report['results'] as $name => $data) {
             $gapTable->addRow([

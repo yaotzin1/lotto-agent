@@ -6,38 +6,86 @@ namespace App\Service;
 
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 
+/**
+ * Kroczenie (stride sampling): pula budowana z losowań oddalonych o stały krok N
+ * wstecz (T-N, T-2N...) i ich sąsiadów ±1.
+ *
+ * Serwis jest ŚWIADOMY GRY. Wcześniej nie był: 49 było wpisane na sztywno
+ * w zawijaniu sąsiadów, w dobijaniu puli, w losowej linii bazowej i w rozkładzie
+ * hipergeometrycznym, a historia zawsze pochodziła z pliku Lotto. Wybranie
+ * EuroJackpota czy Multi Multi dawało więc pulę zbudowaną z losowań Lotto,
+ * w której liczby powyżej 49 nie mogły się pojawić.
+ *
+ * Losowania pochodzą z DrawArchiveService, który scala ręczne archiwum
+ * z cache'em oficjalnego LOTTO OpenAPI.
+ */
 class StrideBacktestService
 {
-    private string $dataFile;
+    /** Minimalna głębokość historii, przy której backtest ma sens statystyczny. */
+    private const MIN_DRAWS_FOR_BACKTEST = 600;
+
+    private string $legacyDataFile;
 
     public function __construct(
+        private readonly ?DrawArchiveService $drawArchiveService = null,
+        private readonly GameRegistryService $gameRegistryService = new GameRegistryService(),
         #[Autowire('%kernel.project_dir%')]
         string $projectDir = ''
     ) {
         $baseDir = $projectDir !== '' ? $projectDir : dirname(__DIR__, 2);
-        $this->dataFile = $baseDir . '/data/lotto_draws.json';
+        $this->legacyDataFile = $baseDir . '/data/lotto_draws.json';
     }
 
     /**
      * @return array<int, array{date: string, numbers: list<int>}>
      */
-    public function loadDraws(): array
+    public function loadDraws(string $gameType = 'Lotto'): array
     {
-        if (!file_exists($this->dataFile)) {
+        if ($this->drawArchiveService !== null) {
+            return $this->drawArchiveService->getChronology($gameType);
+        }
+
+        // Awaryjna ścieżka bez kontenera (np. testy jednostkowe): tylko Lotto,
+        // tylko ręczne archiwum, bez domknięcia z API.
+        if ($gameType !== 'Lotto' || !is_readable($this->legacyDataFile)) {
             return [];
         }
 
-        $content = (string) file_get_contents($this->dataFile);
-        $decoded = json_decode($content, true);
+        $decoded = json_decode((string) file_get_contents($this->legacyDataFile), true);
 
         return is_array($decoded) ? $decoded : [];
     }
 
     /**
+     * Świeżość archiwum danej gry. Null, gdy serwis działa bez archiwum.
+     *
+     * @return array{last_date: ?string, expected_date: ?string, missing: int, stale: bool, total: int}|null
+     */
+    public function freshness(string $gameType = 'Lotto'): ?array
+    {
+        return $this->drawArchiveService?->freshness($gameType);
+    }
+
+    /**
+     * Dociąga brakujące losowania z oficjalnego API i dopisuje je do archiwum.
+     *
+     * @return array{added: int, fetched: int, from_cache: int, rate_limited: bool, warning: ?string}|null
+     */
+    public function refreshArchive(string $gameType = 'Lotto', ?int $sessions = null): ?array
+    {
+        return $this->drawArchiveService?->refresh($gameType, $sessions);
+    }
+
+    /**
      * @param list<int> $strides
      * @return array{
+     *     game: string,
+     *     numbers_from: int,
+     *     drawn_per_draw: int,
+     *     hit_threshold: int,
      *     total_draws: int,
      *     draws_evaluated: int,
+     *     draws_skipped: int,
      *     pool_size: int,
      *     date_from: string,
      *     date_to: string,
@@ -53,30 +101,47 @@ class StrideBacktestService
      *     }>
      * }
      */
-    public function runBacktest(int $poolSize = 12, array $strides = [1, 2, 7, 30, 50, 127, 257, 500]): array
-    {
-        $draws = $this->loadDraws();
+    public function runBacktest(
+        int $poolSize = 12,
+        array $strides = [1, 2, 7, 30, 50, 127, 257, 500],
+        string $gameType = 'Lotto'
+    ): array {
+        $game = $this->gameRegistryService->getGameConfig($gameType);
+        $maxNumber = (int) $game['from'];
+        $poolSize = max(2, min($poolSize, $maxNumber - 1));
+
+        $draws = $this->loadDraws($gameType);
         $totalDraws = count($draws);
 
-        if ($totalDraws < 600) {
-            throw new \RuntimeException("Niewystarczająca liczba losowań w bazie ($totalDraws < 600) do przeprowadzenia rzetelnego backtestu kroczeń.");
+        if ($totalDraws < self::MIN_DRAWS_FOR_BACKTEST) {
+            throw new \RuntimeException(sprintf(
+                'Niewystarczająca liczba losowań w archiwum gry %s (%d < %d) do przeprowadzenia rzetelnego backtestu kroczeń.',
+                $gameType,
+                $totalDraws,
+                self::MIN_DRAWS_FOR_BACKTEST
+            ));
         }
+
+        // Ile liczb pada w jednym losowaniu tej gry. Nie jest to `pick`:
+        // w Multi Multi skreślamy do 10 liczb, ale losowanych jest 20.
+        $drawn = $this->modalDrawSize($draws, (int) $game['pick']);
+        $hitThreshold = min(3, $drawn);
+        $autoAnchors = $this->autoAnchorCount($poolSize, $gameType);
 
         $maxStride = max($strides);
         $warmup = $maxStride + 10;
-        $evalCount = $totalDraws - $warmup;
 
-        // Theoretical hypergeometric distribution for poolSize out of 49, 6 drawn
-        $totalCombs = 13983816.0; // C(49, 6)
+        // Rozkład hipergeometryczny dla TEJ gry: ile z $drawn wylosowanych liczb
+        // wpada do puli $poolSize wybranej z $maxNumber.
+        $totalCombs = $this->binomial($maxNumber, $drawn);
         $theoMatches = [];
-        for ($k = 0; $k <= 6; $k++) {
-            $c_pool_k = $this->binomial($poolSize, $k);
-            $c_rem_k = $this->binomial(49 - $poolSize, 6 - $k);
-            $theoMatches[$k] = ($c_pool_k * $c_rem_k) / $totalCombs;
+        for ($k = 0; $k <= $drawn; $k++) {
+            $theoMatches[$k] = $totalCombs > 0.0
+                ? ($this->binomial($poolSize, $k) * $this->binomial($maxNumber - $poolSize, $drawn - $k)) / $totalCombs
+                : 0.0;
         }
-        $theoMean = $poolSize * (6.0 / 49.0);
+        $theoMean = $poolSize * ($drawn / $maxNumber);
 
-        // Setup strategies
         $strategies = [];
         foreach ($strides as $s) {
             $strategies["Stride-$s (Anchor+Nbr)"] = ['type' => 'stride_nbr', 'stride' => $s];
@@ -87,30 +152,42 @@ class StrideBacktestService
         $rawResults = [];
         foreach (array_keys($strategies) as $name) {
             $rawResults[$name] = [
-                'match_counts' => array_fill(0, 7, 0),
+                'match_counts' => array_fill(0, $drawn + 1, 0),
                 'total_matches' => 0,
                 'gaps_ge3' => [],
                 'last_hit_ge3' => null,
             ];
         }
 
+        $evalCount = 0;
+        $skipped = 0;
+
         for ($t = $warmup; $t < $totalDraws; $t++) {
             $targetDraw = $draws[$t]['numbers'];
 
+            // Losowania o nietypowej liczbie liczb (np. skrócony wpis w archiwum)
+            // rozjeżdżałyby rozkład trafień, więc nie wchodzą do statystyki.
+            if (count($targetDraw) !== $drawn) {
+                $skipped++;
+                continue;
+            }
+
+            $evalCount++;
+
             foreach ($strategies as $name => $strat) {
                 if ($strat['type'] === 'stride_nbr') {
-                    $pool = $this->buildStrideNeighbourPool($draws, $t, $strat['stride'], $poolSize);
+                    $pool = $this->buildStrideNeighbourPool($draws, $t, $strat['stride'], $poolSize, $maxNumber);
                 } elseif ($strat['type'] === 'multi_anchor') {
-                    $pool = $this->buildMultiAnchorStridePool($draws, $t, $strat['stride'], $poolSize);
+                    $pool = $this->buildMultiAnchorStridePool($draws, $t, $strat['stride'], $poolSize, $autoAnchors, $maxNumber);
                 } else {
-                    $pool = $this->buildRandomPool($poolSize);
+                    $pool = $this->buildRandomPool($poolSize, $maxNumber);
                 }
 
                 $hits = count(array_intersect($targetDraw, $pool));
                 $rawResults[$name]['match_counts'][$hits]++;
                 $rawResults[$name]['total_matches'] += $hits;
 
-                if ($hits >= 3) {
+                if ($hits >= $hitThreshold) {
                     if ($rawResults[$name]['last_hit_ge3'] !== null) {
                         $rawResults[$name]['gaps_ge3'][] = $t - $rawResults[$name]['last_hit_ge3'];
                     }
@@ -119,10 +196,18 @@ class StrideBacktestService
             }
         }
 
+        if ($evalCount === 0) {
+            throw new \RuntimeException(sprintf(
+                'Archiwum gry %s nie zawiera losowań o oczekiwanej liczbie %d liczb.',
+                $gameType,
+                $drawn
+            ));
+        }
+
         $results = [];
         foreach ($rawResults as $name => $res) {
             $matchPct = [];
-            for ($k = 0; $k <= 6; $k++) {
+            for ($k = 0; $k <= $drawn; $k++) {
                 $matchPct[$k] = round(($res['match_counts'][$k] / $evalCount) * 100, 2);
             }
 
@@ -142,7 +227,7 @@ class StrideBacktestService
                 'match_counts' => $res['match_counts'],
                 'match_pct' => $matchPct,
                 'avg_match' => round($res['total_matches'] / $evalCount, 4),
-                'jackpot_hits' => $res['match_counts'][6],
+                'jackpot_hits' => $res['match_counts'][$drawn],
                 'gaps_ge3_mean' => $gapMean,
                 'gaps_ge3_stddev' => $gapStdDev,
                 'gaps_ge3_max' => $gapMax,
@@ -150,8 +235,13 @@ class StrideBacktestService
         }
 
         return [
+            'game' => $gameType,
+            'numbers_from' => $maxNumber,
+            'drawn_per_draw' => $drawn,
+            'hit_threshold' => $hitThreshold,
             'total_draws' => $totalDraws,
             'draws_evaluated' => $evalCount,
+            'draws_skipped' => $skipped,
             'pool_size' => $poolSize,
             'date_from' => $draws[$warmup]['date'],
             'date_to' => $draws[$totalDraws - 1]['date'],
@@ -167,25 +257,31 @@ class StrideBacktestService
      * @param array<int, array{date: string, numbers: list<int>}> $history
      * @return list<int>
      */
-    public function buildStrideNeighbourPool(array $history, int $targetIdx, int $stride, int $targetPoolSize): array
-    {
+    public function buildStrideNeighbourPool(
+        array $history,
+        int $targetIdx,
+        int $stride,
+        int $targetPoolSize,
+        int $maxNumber = 49
+    ): array {
+        $targetPoolSize = max(1, min($targetPoolSize, $maxNumber));
         $anchorIdx = $targetIdx - $stride;
-        if ($anchorIdx < 0) {
+
+        if ($anchorIdx < 0 || !isset($history[$anchorIdx])) {
             return range(1, $targetPoolSize);
         }
 
-        $anchors = $history[$anchorIdx]['numbers'];
+        $anchors = array_values(array_filter(
+            $history[$anchorIdx]['numbers'],
+            static fn(int $n): bool => $n >= 1 && $n <= $maxNumber
+        ));
+
         $neighbourCounts = [];
-
         foreach ($anchors as $num) {
-            $left = $num === 1 ? 49 : $num - 1;
-            $right = $num === 49 ? 1 : $num + 1;
-
-            if (!in_array($left, $anchors, true)) {
-                $neighbourCounts[$left] = ($neighbourCounts[$left] ?? 0) + 1;
-            }
-            if (!in_array($right, $anchors, true)) {
-                $neighbourCounts[$right] = ($neighbourCounts[$right] ?? 0) + 1;
+            foreach ($this->neighboursOf($num, $maxNumber) as $neighbour) {
+                if (!in_array($neighbour, $anchors, true)) {
+                    $neighbourCounts[$neighbour] = ($neighbourCounts[$neighbour] ?? 0) + 1;
+                }
             }
         }
 
@@ -199,23 +295,14 @@ class StrideBacktestService
             $pool[] = (int) $n;
         }
 
-        $candidate = 1;
-        while (count($pool) < $targetPoolSize && $candidate <= 49) {
-            if (!in_array($candidate, $pool, true)) {
-                $pool[] = $candidate;
-            }
-            $candidate++;
-        }
-
-        sort($pool);
-        return $pool;
+        return $this->padPool($pool, $targetPoolSize, $maxNumber);
     }
 
     /**
-     * @param array<int, array{date: string, numbers: list<int>}> $history
-     * @return list<int>
-     */
-    /**
+     * Gdy $maxAnchors jest null, liczba kotwic jest liczona dla Lotto —
+     * wywołania świadome gry (runBacktest, getStridePoolInfo) podają ją wprost
+     * przez autoAnchorCount($poolSize, $gameType).
+     *
      * @param array<int, array{date: string, numbers: list<int>}> $history
      * @return list<int>
      */
@@ -224,9 +311,11 @@ class StrideBacktestService
         int $targetIdx,
         int $stride,
         int $targetPoolSize,
-        ?int $maxAnchors = null
+        ?int $maxAnchors = null,
+        int $maxNumber = 49
     ): array {
-        $anchorLimit = $maxAnchors ?? max(2, (int) ceil($targetPoolSize / 6));
+        $targetPoolSize = max(1, min($targetPoolSize, $maxNumber));
+        $anchorLimit = $maxAnchors ?? $this->autoAnchorCount($targetPoolSize, 'Lotto');
         $numberOccurrences = [];
         $firstSeen = [];
 
@@ -236,6 +325,9 @@ class StrideBacktestService
                 break;
             }
             foreach ($history[$aIdx]['numbers'] as $num) {
+                if ($num < 1 || $num > $maxNumber) {
+                    continue;
+                }
                 $numberOccurrences[$num] = ($numberOccurrences[$num] ?? 0) + 1;
                 if (!isset($firstSeen[$num])) {
                     $firstSeen[$num] = $k;
@@ -250,18 +342,15 @@ class StrideBacktestService
             return $firstSeen[$a] <=> $firstSeen[$b];
         });
 
-        $pool = array_slice(array_keys($numberOccurrences), 0, $targetPoolSize);
+        $pool = array_map('intval', array_slice(array_keys($numberOccurrences), 0, $targetPoolSize));
 
         if (count($pool) < $targetPoolSize) {
             $neighbourCounts = [];
             foreach (array_keys($numberOccurrences) as $num) {
-                $left = $num === 1 ? 49 : $num - 1;
-                $right = $num === 49 ? 1 : $num + 1;
-                if (!in_array($left, $pool, true)) {
-                    $neighbourCounts[$left] = ($neighbourCounts[$left] ?? 0) + 1;
-                }
-                if (!in_array($right, $pool, true)) {
-                    $neighbourCounts[$right] = ($neighbourCounts[$right] ?? 0) + 1;
+                foreach ($this->neighboursOf((int) $num, $maxNumber) as $neighbour) {
+                    if (!in_array($neighbour, $pool, true)) {
+                        $neighbourCounts[$neighbour] = ($neighbourCounts[$neighbour] ?? 0) + 1;
+                    }
                 }
             }
             arsort($neighbourCounts);
@@ -273,29 +362,79 @@ class StrideBacktestService
             }
         }
 
+        return $this->padPool($pool, $targetPoolSize, $maxNumber);
+    }
+
+    /**
+     * @return list<int>
+     */
+    public function buildRandomPool(int $targetPoolSize, int $maxNumber = 49): array
+    {
+        $targetPoolSize = max(1, min($targetPoolSize, $maxNumber));
+        $numbers = range(1, $maxNumber);
+        shuffle($numbers);
+        $pool = array_slice($numbers, 0, $targetPoolSize);
+        sort($pool);
+
+        return $pool;
+    }
+
+    /**
+     * Sąsiedzi ±1 na okręgu 1..$maxNumber.
+     *
+     * @return list<int>
+     */
+    private function neighboursOf(int $number, int $maxNumber): array
+    {
+        if ($maxNumber < 2) {
+            return [];
+        }
+
+        return [
+            $number === 1 ? $maxNumber : $number - 1,
+            $number === $maxNumber ? 1 : $number + 1,
+        ];
+    }
+
+    /**
+     * Domyka pulę do żądanego rozmiaru, usuwa duplikaty i sortuje.
+     *
+     * @param list<int> $pool
+     * @return list<int>
+     */
+    private function padPool(array $pool, int $targetPoolSize, int $maxNumber): array
+    {
+        $pool = array_values(array_unique(array_map('intval', $pool)));
+
         $candidate = 1;
-        while (count($pool) < $targetPoolSize && $candidate <= 49) {
+        while (count($pool) < $targetPoolSize && $candidate <= $maxNumber) {
             if (!in_array($candidate, $pool, true)) {
                 $pool[] = $candidate;
             }
             $candidate++;
         }
 
+        $pool = array_slice($pool, 0, $targetPoolSize);
         sort($pool);
+
         return $pool;
     }
 
     /**
-     * @return list<int>
+     * Ile kotwic próbkować, gdy użytkownik nie poda liczby wprost.
+     *
+     * Dzielnikiem jest liczba skreśleń W TEJ GRZE, a nie wpisana wcześniej
+     * na sztywno szóstka z Lotto.
      */
-    public function buildRandomPool(int $targetPoolSize): array
+    public function autoAnchorCount(int $poolSize, string $gameType = 'Lotto'): int
     {
-        $numbers = range(1, 49);
-        shuffle($numbers);
-        $pool = array_slice($numbers, 0, $targetPoolSize);
-        sort($pool);
+        try {
+            $pick = max(1, (int) $this->gameRegistryService->getGameConfig($gameType)['pick']);
+        } catch (\Throwable) {
+            $pick = 6;
+        }
 
-        return $pool;
+        return max(2, (int) ceil($poolSize / $pick));
     }
 
     private function binomial(int $n, int $k): float
@@ -316,7 +455,31 @@ class StrideBacktestService
     }
 
     /**
+     * Najczęstsza liczba liczb w losowaniu — dla Lotto 6, dla Multi Multi 20.
+     *
+     * @param array<int, array{date: string, numbers: list<int>}> $draws
+     */
+    private function modalDrawSize(array $draws, int $fallback): int
+    {
+        $counts = [];
+        foreach ($draws as $draw) {
+            $size = count($draw['numbers']);
+            $counts[$size] = ($counts[$size] ?? 0) + 1;
+        }
+
+        if ($counts === []) {
+            return max(1, $fallback);
+        }
+
+        arsort($counts);
+
+        return (int) array_key_first($counts);
+    }
+
+    /**
      * @return array{
+     *     game: string,
+     *     numbers_from: int,
      *     target_draw: array{index: int, date: string, numbers: list<int>}|null,
      *     anchor_draws: list<array{index: int, date: string, numbers: list<int>, stride_back: int}>,
      *     anchors: list<int>,
@@ -325,7 +488,9 @@ class StrideBacktestService
      *     strategy: string,
      *     stride: int,
      *     pool_size: int,
-     *     anchor_count: int
+     *     anchor_count: int,
+     *     total_draws: int,
+     *     freshness: array{last_date: ?string, expected_date: ?string, missing: int, stale: bool, total: int}|null
      * }
      */
     public function getStridePoolInfo(
@@ -333,13 +498,23 @@ class StrideBacktestService
         int $poolSize = 12,
         string $strategy = 'anchor_neighbours',
         ?int $targetIdx = null,
-        ?int $anchorCount = null
+        ?int $anchorCount = null,
+        string $gameType = 'Lotto'
     ): array {
-        $draws = $this->loadDraws();
+        $game = $this->gameRegistryService->getGameConfig($gameType);
+        $maxNumber = (int) $game['from'];
+        $poolSize = max(1, min($poolSize, $maxNumber));
+
+        $draws = $this->loadDraws($gameType);
         $totalDraws = count($draws);
 
         if ($totalDraws === 0) {
-            throw new \RuntimeException('Brak danych historycznych w data/lotto_draws.json.');
+            throw new \RuntimeException(sprintf(
+                'Brak archiwum losowań dla gry %s (oczekiwany plik: %s). '
+                . 'Uzupełnij je z LOTTO OpenAPI (wymaga LOTTO_API_KEY) albo przez scripts/parse_history.php.',
+                $gameType,
+                $this->drawArchiveService?->fileFor($gameType) ?? $this->legacyDataFile
+            ));
         }
 
         $idx = $targetIdx ?? ($totalDraws - 1);
@@ -353,7 +528,7 @@ class StrideBacktestService
         if ($anchorCount !== null && $anchorCount > 0) {
             $kLimit = $anchorCount;
         } else {
-            $kLimit = ($strategy === 'multi_anchor') ? max(2, (int) ceil($poolSize / 6)) : 1;
+            $kLimit = ($strategy === 'multi_anchor') ? $this->autoAnchorCount($poolSize, $gameType) : 1;
         }
 
         for ($k = 1; $k <= $kLimit; $k++) {
@@ -369,9 +544,9 @@ class StrideBacktestService
         }
 
         if ($strategy === 'multi_anchor') {
-            $pool = $this->buildMultiAnchorStridePool($draws, $idx, $stride, $poolSize, $kLimit);
+            $pool = $this->buildMultiAnchorStridePool($draws, $idx, $stride, $poolSize, $kLimit, $maxNumber);
         } else {
-            $pool = $this->buildStrideNeighbourPool($draws, $idx, $stride, $poolSize);
+            $pool = $this->buildStrideNeighbourPool($draws, $idx, $stride, $poolSize, $maxNumber);
         }
 
         $allAnchors = [];
@@ -388,6 +563,8 @@ class StrideBacktestService
         sort($neighbours);
 
         return [
+            'game' => $gameType,
+            'numbers_from' => $maxNumber,
             'target_draw' => $targetDraw,
             'anchor_draws' => $anchorDraws,
             'anchors' => $allAnchors,
@@ -397,8 +574,8 @@ class StrideBacktestService
             'stride' => $stride,
             'pool_size' => $poolSize,
             'anchor_count' => count($anchorDraws),
+            'total_draws' => $totalDraws,
+            'freshness' => $this->freshness($gameType),
         ];
     }
 }
-
-
