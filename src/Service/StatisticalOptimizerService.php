@@ -353,6 +353,8 @@ class StatisticalOptimizerService
         $pairMatrix = $this->buildPairAffinityMatrix($pool, $frequencies, $options['draws'] ?? []);
         $gaussParams = $this->calculateGaussianParameters($maxNumber, $pick);
         $maxPerDecade = $this->maxPerDecade($pick, $maxNumber);
+        $coverDecades = $options['cover_decades'] ?? false;
+        $poolDecades = array_values(array_unique(array_map(fn($n) => (int)floor(($n - 1) / 10), $pool)));
 
         $usageCounts = array_fill_keys($pool, 0);
         $pairUsageCounts = [];
@@ -439,6 +441,26 @@ class StatisticalOptimizerService
                             continue; // Limit zagęszczenia dekadowego (skalowany do gry)
                         }
 
+                        $isCandCoveringNewDecade = false;
+                        if ($coverDecades) {
+                            $curDecs = [];
+                            foreach ($currentBet as $cb) {
+                                $curDecs[(int)floor(($cb - 1) / 10)] = true;
+                            }
+                            $uncov = [];
+                            foreach ($poolDecades as $pd) {
+                                if (!isset($curDecs[$pd])) {
+                                    $uncov[$pd] = true;
+                                }
+                            }
+                            $isCandCoveringNewDecade = isset($uncov[$candDecade]);
+                            $uncovCount = count($uncov);
+                            $slotsLeft = $pick - count($currentBet);
+                            if ($uncovCount > 0 && $slotsLeft <= $uncovCount && !$isCandCoveringNewDecade) {
+                                continue; // Musimy pobrać liczbę z jeszcze niepokrytej dekady!
+                            }
+                        }
+
                         // --- FILTR 3: PROBABILITY & SYNERGY SCORING ---
                         $fScore = ($frequencies[$candidate] ?? 1) * $wFreq;
 
@@ -452,6 +474,9 @@ class StatisticalOptimizerService
                         $usagePenalty = $usageCounts[$candidate] * $penaltyUsage;
 
                         $score = ($fScore * 3.0) + ($pairAffinitySum * $wPair) - $usagePenalty - $pairUsagePenaltySum;
+                        if ($isCandCoveringNewDecade) {
+                            $score += 50.0; // Bonus za pokrycie nowej dekady
+                        }
 
                         // Preferencja dla balansu parzyste / nieparzyste
                         $currentOdds = count(array_filter($currentBet, fn($n) => $n % 2 !== 0));
@@ -650,6 +675,8 @@ class StatisticalOptimizerService
         $pairMatrix = $this->buildPairAffinityMatrix($pool, $frequencies, $options['draws'] ?? []);
         $gaussParams = $this->calculateGaussianParameters($maxNumber, $pick);
         $maxPerDecade = $this->maxPerDecade($pick, $maxNumber);
+        $coverDecades = $options['cover_decades'] ?? false;
+        $poolDecades = array_values(array_unique(array_map(fn($n) => (int)floor(($n - 1) / 10), $pool)));
 
         // Liczba zakładów bazowych potrzebna do jednokrotnego pokrycia całej puli
         $baseBetsNeeded = (int)ceil($poolSize / $pick);
@@ -852,6 +879,26 @@ class StatisticalOptimizerService
                         }
                         if ($decC >= $maxPerDecade) continue;
 
+                        $isCandCoveringNewDecade = false;
+                        if ($coverDecades) {
+                            $curDecs = [];
+                            foreach ($currentBet as $cb) {
+                                $curDecs[(int)floor(($cb - 1) / 10)] = true;
+                            }
+                            $uncov = [];
+                            foreach ($poolDecades as $pd) {
+                                if (!isset($curDecs[$pd])) {
+                                    $uncov[$pd] = true;
+                                }
+                            }
+                            $isCandCoveringNewDecade = isset($uncov[$candDecade]);
+                            $uncovCount = count($uncov);
+                            $slotsLeft = $pick - count($currentBet);
+                            if ($uncovCount > 0 && $slotsLeft <= $uncovCount && !$isCandCoveringNewDecade) {
+                                continue;
+                            }
+                        }
+
                         $fScore = ($frequencies[$candidate] ?? 1) * $wFreq;
                         $pairAff = 0;
                         $pairPen = 0;
@@ -862,6 +909,9 @@ class StatisticalOptimizerService
                         $uPen = $usageCounts[$candidate] * $penaltyUsage;
 
                         $score = ($fScore * 3.0) + ($pairAff * $wPair) - $uPen - $pairPen;
+                        if ($isCandCoveringNewDecade) {
+                            $score += 50.0;
+                        }
 
                         $odds = count(array_filter($currentBet, fn($n) => $n % 2 !== 0));
                         $isOdd = ($candidate % 2 !== 0);
@@ -1132,6 +1182,9 @@ class StatisticalOptimizerService
             $decadeBonus = -150; // kara za stłoczenie liczb w jednej dekadzie
         } elseif ($decadeSpread >= $this->targetDecadeSpread($pick, $maxNumber)) {
             $decadeBonus = 30; // bonus za naturalne rozproszenie
+            if ($decadeSpread >= min($this->targetDecadeSpread($pick, $maxNumber) + 1, (int)ceil($maxNumber / 10), $pick)) {
+                $decadeBonus += 20; // dodatkowy bonus za pełne rozproszenie dekadowe
+            }
         }
 
         $totalScore = ($pairAffinityTotal * 1.0) + ($freqTotal * 2.5) + $parityBonus + $gaussianBonus + $decadeBonus + $consecutivePenalty;

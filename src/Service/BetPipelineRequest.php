@@ -39,6 +39,7 @@ final class BetPipelineRequest
         public readonly int $blockCount = 5,
         public readonly array $hotNumbers = [],
         public readonly int $weight = 5,
+        public readonly bool $coverDecades = false,
     ) {
     }
 

@@ -75,7 +75,10 @@ class BetPipelineService
         $pool = $request->pool;
         $pick = $request->pick();
         $maxNumber = $request->maxNumber();
-        $options = ['draws' => $request->draws];
+        $options = [
+            'draws' => $request->draws,
+            'cover_decades' => $request->coverDecades,
+        ];
 
         switch ($request->mode) {
             case '8':

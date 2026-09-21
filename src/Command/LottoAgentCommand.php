@@ -40,7 +40,8 @@ class LottoAgentCommand extends Command
         $this->addOption('months', 'm', InputOption::VALUE_REQUIRED, 'Z ilu ostatnich miesięcy pobrać statystyki?');
         $this->addOption('neighbours', null, InputOption::VALUE_NONE, 'Czy uwzględniać w analizie liczby sąsiadujące?');
         $this->addOption('sessions', 's', InputOption::VALUE_REQUIRED, 'Ilość ostatnich losowań do analizy (zamiast miesięcy)');
-        $this->addOption('strategy', 'st', InputOption::VALUE_REQUIRED, 'Strategia doboru liczb przez AI (syndicate/balanced/aggressive)');
+        $this->addOption('strategy', 'st', InputOption::VALUE_REQUIRED, 'Strategia doboru liczb przez AI (syndicate/balanced/aggressive/decades)');
+        $this->addOption('cover-decades', 'cd', InputOption::VALUE_NONE, 'Wymuś równomierne pokrycie wszystkich dekad');
         $this->addOption('json-output', 'j', InputOption::VALUE_NONE, 'Zwróć odpowiedź w formacie JSON');
     }
 
@@ -69,8 +70,9 @@ class LottoAgentCommand extends Command
         $months = $input->getOption('months');
         $sessions = $input->getOption('sessions');
         $strategy = $input->getOption('strategy');
+        $coverDecades = (bool) $input->getOption('cover-decades');
         if (!$strategy) {
-            $strategy = 'syndicate';
+            $strategy = $coverDecades ? 'decades' : 'syndicate';
         }
         $isJson = (bool) $input->getOption('json-output');
 
@@ -129,7 +131,16 @@ class LottoAgentCommand extends Command
                 }
             };
 
-            $reactResult = $this->reActAgentService->runAgentLoop($gameType, $poolSize, $strategy, $onStepCallback, $sessions, $months, $includeNeighbours);
+            $reactResult = $this->reActAgentService->runAgentLoop(
+                $gameType,
+                $poolSize,
+                $strategy,
+                $onStepCallback,
+                $sessions,
+                $months,
+                $includeNeighbours,
+                $coverDecades
+            );
 
             $pool = $reactResult['pool'];
             $reasoning = $reactResult['reasoning'];
