@@ -73,6 +73,8 @@ class LottoGeneratorCommand extends Command
         $this->addOption('block-count', null, InputOption::VALUE_REQUIRED, 'Tryb 2: liczba bloków');
         $this->addOption('hot', null, InputOption::VALUE_REQUIRED, 'Tryb 3: liczby gorące o zwiększonej wadze');
         $this->addOption('weight', null, InputOption::VALUE_REQUIRED, 'Tryb 3: waga liczb gorących (2-10)');
+        $this->addOption('with-neighbours', 'wn', InputOption::VALUE_NONE, 'W trybie Decades lub AI: uwzględniaj sąsiadów (±1) ostatnich losowań');
+        $this->addOption('neighbours', null, InputOption::VALUE_NONE, 'Alias dla --with-neighbours');
     }
 
     /**
@@ -167,9 +169,14 @@ class LottoGeneratorCommand extends Command
             }
         }
 
+        $withNeighbours = (bool) ($input->getOption('with-neighbours') || $input->getOption('neighbours'));
         $fullPool = [];
 
         if ($poolMode === 'AI') {
+            if (!$input->hasParameterOption('--with-neighbours') && !$input->hasParameterOption('--neighbours') && !$input->hasParameterOption('-wn') && $input->isInteractive()) {
+                $withNeighbours = $io->confirm('Czy uwzględniać w analizie liczby sąsiadujące (np. +1/-1)?', false);
+            }
+
             $sessionsOpt = $input->getOption('sessions');
             $sessions = $sessionsOpt !== null && is_numeric($sessionsOpt) ? (int)$sessionsOpt : null;
             if (!$sessions) {
@@ -200,7 +207,7 @@ class LottoGeneratorCommand extends Command
                 }
             };
 
-            $result = $this->reactAgentService->runAgentLoop($gameType, $poolSize, $aiStrategy, $onStepCallback, $sessions, null, false, $coverDecades);
+            $result = $this->reactAgentService->runAgentLoop($gameType, $poolSize, $aiStrategy, $onStepCallback, $sessions, null, $withNeighbours, $coverDecades);
             $fullPool = $result['pool'] ?? $result['selected_pool'] ?? [];
             sort($fullPool);
 
@@ -217,6 +224,10 @@ class LottoGeneratorCommand extends Command
             }
             $io->success("Pula AI (" . count($fullPool) . " liczb): " . implode(', ', $fullPool));
         } elseif ($poolMode === 'Decades') {
+            if (!$input->hasParameterOption('--with-neighbours') && !$input->hasParameterOption('--neighbours') && !$input->hasParameterOption('-wn') && $input->isInteractive()) {
+                $withNeighbours = $io->confirm('Czy uwzględnić w dekadach sąsiadów (±1) z ostatniego losowania?', false);
+            }
+
             $maxNum = $game['from'] ?? 49;
             $decadesCount = (int) ceil($maxNum / 10);
             $defaultPoolSize = (string) min($maxNum, max($game['pick'], 3 * $decadesCount));
@@ -235,26 +246,47 @@ class LottoGeneratorCommand extends Command
             $sessions = (int) ($input->getOption('sessions') ?: 50);
             $history = $this->historicalDataProvider->fetch($gameType, $sessions);
             $frequencies = $history['frequencies'] ?? [];
+            $latestDraw = $history['draws'][0] ?? [];
 
             $decadeStrategy = (string) ($input->getOption('decade-strategy') ?: 'hot');
             if (!in_array($decadeStrategy, ['hot', 'balanced', 'random'], true)) {
                 $decadeStrategy = 'hot';
             }
 
-            $decadeResult = $this->decadeDistributionService->generateDecadePool($maxNum, $poolSize, $frequencies, $decadeStrategy);
+            $decadeResult = $this->decadeDistributionService->generateDecadePool(
+                $maxNum,
+                $poolSize,
+                $frequencies,
+                $decadeStrategy,
+                $latestDraw,
+                $withNeighbours
+            );
             $fullPool = $decadeResult['pool'];
 
-            $io->section(sprintf('Rozkład dekadowy puli (%d liczb z %d):', count($fullPool), $maxNum));
+            $io->section(sprintf('Rozkład dekadowy puli (%d liczb z %d)%s:', count($fullPool), $maxNum, $withNeighbours ? ' [z sąsiadami ±1]' : ''));
+            if ($withNeighbours && !empty($decadeResult['anchors_used'])) {
+                $io->text(sprintf(' Kotwice wygranych (baza sąsiadów): [%s]', implode(', ', $decadeResult['anchors_used'])));
+            }
             foreach ($decadeResult['breakdown'] as $b) {
+                $nbrInfo = '';
+                if ($withNeighbours && !empty($b['neighbours_selected'])) {
+                    $nbrInfo = sprintf(' (w tym sąsiedzi ±1: %s)', implode(', ', $b['neighbours_selected']));
+                }
                 $io->text(sprintf(
-                    ' • Dekada %-7s: %2d liczb -> [%s]',
+                    ' • Dekada %-7s: %2d liczb -> [%s]%s',
                     $b['label'],
                     $b['quota'],
-                    implode(', ', $b['selected'])
+                    implode(', ', $b['selected']),
+                    $nbrInfo
                 ));
             }
 
-            $io->success(sprintf('Pula dekadowa (%d liczb): %s', count($fullPool), implode(', ', $fullPool)));
+            $io->success(sprintf(
+                'Pula dekadowa (%d liczb)%s: %s',
+                count($fullPool),
+                $withNeighbours ? sprintf(' [%d sąsiadów]', $decadeResult['neighbours_count'] ?? 0) : '',
+                implode(', ', $fullPool)
+            ));
         } else {
             $poolOpt = $input->getOption('pool');
             if ($poolOpt !== null && strtolower(trim((string) $poolOpt)) === 'all') {

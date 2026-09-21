@@ -196,4 +196,88 @@ class DecadeDistributionServiceTest extends TestCase
         $this->assertSame(4, $val2['decades_covered']);
         $this->assertContains('31-40', $val2['empty_decades']);
     }
+
+    public function testGenerateDecadePoolWithNeighboursPrioritizesNeighboursWithinDecades(): void
+    {
+        // 5 dekad, pula 15 liczb => dokładnie 3 liczby na dekadę
+        // Anchors: [15, 35] -> sąsiedzi: 14, 16 w dekadzie 11-20 oraz 34, 36 w dekadzie 31-40
+        $anchors = [15, 35];
+
+        // Dajmy bardzo wysoką częstotliwość liczbom 11, 12, 13 w dekadzie 11-20,
+        // ale 14 i 16 są sąsiadami kotwicy 15 (±1).
+        $frequencies = [
+            11 => 100,
+            12 => 90,
+            13 => 80,
+            14 => 10,
+            16 => 15,
+            17 => 70,
+            18 => 60,
+            // Dekada 1-10 (brak sąsiadów)
+            1 => 50, 2 => 40, 3 => 30,
+            // Dekada 31-40 (sąsiedzi 34, 36)
+            31 => 100, 32 => 90, 34 => 5, 36 => 10, 37 => 80,
+        ];
+
+        $result = $this->service->generateDecadePool(
+            maxNumber: 49,
+            poolSize: 15,
+            frequencies: $frequencies,
+            strategy: 'hot',
+            anchors: $anchors,
+            withNeighbours: true
+        );
+
+        $this->assertTrue($result['with_neighbours']);
+        $this->assertTrue($result['is_all_decades_covered']);
+
+        // Dekada 11-20 (index 1): quota 3.
+        // Sąsiedzi: 14 i 16 (muszą zostać wybrane mimo niskich częstotliwości!).
+        // Trzecia liczba powinna być z pozostałych o najwyższej frekwencji: 11 (freq 100).
+        $dec1 = $result['breakdown'][1];
+        $this->assertContains(14, $dec1['selected']);
+        $this->assertContains(16, $dec1['selected']);
+        $this->assertContains(11, $dec1['selected']);
+        $this->assertSame([14, 16], $dec1['neighbours_selected']);
+
+        // Dekada 1-10 (index 0): brak sąsiadów, wybrane z najwyższych frekwencji (1, 2, 3)
+        $dec0 = $result['breakdown'][0];
+        $this->assertEmpty($dec0['neighbours_selected']);
+        $this->assertSame([1, 2, 3], $dec0['selected']);
+
+        // Dekada 31-40 (index 3): sąsiedzi 34 i 36 + najwyższa frekwencja 31
+        $dec3 = $result['breakdown'][3];
+        $this->assertContains(34, $dec3['selected']);
+        $this->assertContains(36, $dec3['selected']);
+        $this->assertContains(31, $dec3['selected']);
+        $this->assertSame([34, 36], $dec3['neighbours_selected']);
+
+        $this->assertGreaterThanOrEqual(4, $result['neighbours_count']);
+    }
+
+    public function testGenerateDecadePoolWithNeighboursFalsePreservesOriginalBehavior(): void
+    {
+        $anchors = [15];
+        $frequencies = [
+            11 => 100,
+            12 => 90,
+            13 => 80,
+            14 => 10,
+            16 => 15,
+        ];
+
+        // Przy withNeighbours = false, sąsiedzi 14 i 16 NIE powinni mieć priorytetu
+        $result = $this->service->generateDecadePool(
+            maxNumber: 49,
+            poolSize: 15,
+            frequencies: $frequencies,
+            strategy: 'hot',
+            anchors: $anchors,
+            withNeighbours: false
+        );
+
+        $this->assertFalse($result['with_neighbours']);
+        $dec1Selected = $result['breakdown'][1]['selected'];
+        $this->assertSame([11, 12, 13], $dec1Selected);
+    }
 }

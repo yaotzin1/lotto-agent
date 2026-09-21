@@ -80,6 +80,7 @@ class LottoTuiCommand extends Command
         $this->addOption('hot', null, InputOption::VALUE_REQUIRED, 'Tryb 3: liczby gorące o zwiększonej wadze');
         $this->addOption('mode', 'm', InputOption::VALUE_REQUIRED, 'Tryb pracy generatora (1-8)');
         $this->addOption('neighbours', 'nb', InputOption::VALUE_NONE, 'Czy uwzględniać w analizie liczby sąsiadujące (+1/-1)?');
+        $this->addOption('with-neighbours', 'wn', InputOption::VALUE_NONE, 'W trybie Decades lub AI: uwzględniaj sąsiadów (±1) ostatnich losowań');
         $this->addOption('bankers', 'bk', InputOption::VALUE_REQUIRED, 'Liczby bankierów oddzielone przecinkami/spacją (dla trybów 4 i 6)');
         $this->addOption('weight', 'w', InputOption::VALUE_REQUIRED, 'Waga dla gorących liczb w generatorze ważonym (dla trybu 3)');
         $this->addOption('stride', null, InputOption::VALUE_REQUIRED, 'Krok kroczenia wstecz dla trybu Stride (np. 257 lub 127)');
@@ -222,7 +223,7 @@ class LottoTuiCommand extends Command
             }
         }
 
-        $includeNeighbours = (bool)$input->getOption('neighbours');
+        $includeNeighbours = (bool) ($input->getOption('with-neighbours') || $input->getOption('neighbours'));
 
         $fullPool = [];
 
@@ -403,20 +404,49 @@ class LottoTuiCommand extends Command
                 $decadeStrategy = 'hot';
             }
 
-            $decadeResult = $this->decadeDistributionService->generateDecadePool($maxNum, $poolSize, $frequencies, $decadeStrategy);
+            if (!$input->hasParameterOption('--with-neighbours') && !$input->hasParameterOption('--neighbours') && !$input->hasParameterOption('-wn') && !$input->hasParameterOption('-nb') && $input->isInteractive()) {
+                $includeNeighbours = $this->promptSelect('Czy uwzględnić w dekadach sąsiadów (±1) z ostatniego losowania?', [
+                    'yes' => 'Tak - priorytetyzuj sąsiadów ±1 w dekadach',
+                    'no' => 'Nie - czysta strategia częstotliwościowa',
+                ], 'no') === 'yes';
+            }
+
+            $latestDraw = $history['draws'][0] ?? [];
+
+            $decadeResult = $this->decadeDistributionService->generateDecadePool(
+                $maxNum,
+                $poolSize,
+                $frequencies,
+                $decadeStrategy,
+                $latestDraw,
+                $includeNeighbours
+            );
             $fullPool = $decadeResult['pool'];
 
-            $io->section(sprintf('Rozkład dekadowy puli (%d liczb z %d):', count($fullPool), $maxNum));
+            $io->section(sprintf('Rozkład dekadowy puli (%d liczb z %d)%s:', count($fullPool), $maxNum, $includeNeighbours ? ' [z sąsiadami ±1]' : ''));
+            if ($includeNeighbours && !empty($decadeResult['anchors_used'])) {
+                $io->text(sprintf(' Kotwice wygranych (baza sąsiadów): [%s]', implode(', ', $decadeResult['anchors_used'])));
+            }
             foreach ($decadeResult['breakdown'] as $b) {
+                $nbrInfo = '';
+                if ($includeNeighbours && !empty($b['neighbours_selected'])) {
+                    $nbrInfo = sprintf(' (w tym sąsiedzi ±1: %s)', implode(', ', $b['neighbours_selected']));
+                }
                 $io->text(sprintf(
-                    ' • Dekada %-7s: %2d liczb -> [%s]',
+                    ' • Dekada %-7s: %2d liczb -> [%s]%s',
                     $b['label'],
                     $b['quota'],
-                    implode(', ', $b['selected'])
+                    implode(', ', $b['selected']),
+                    $nbrInfo
                 ));
             }
 
-            $io->success('Pula dekadowa (' . count($fullPool) . ' liczb): ' . implode(', ', $fullPool));
+            $io->success(sprintf(
+                'Pula dekadowa (%d liczb)%s: %s',
+                count($fullPool),
+                $includeNeighbours ? sprintf(' [%d sąsiadów]', $decadeResult['neighbours_count'] ?? 0) : '',
+                implode(', ', $fullPool)
+            ));
         } else {
             $poolOpt = $input->getOption('pool');
             $maxNum = $game['from'] ?? 49;

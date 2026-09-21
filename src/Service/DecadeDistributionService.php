@@ -156,6 +156,8 @@ class DecadeDistributionService
      *
      * @param array<int, int> $frequencies Mapa [liczba => wystąpienia]
      * @param string $strategy 'hot' (najczęstsze w dekadzie), 'balanced' (miks hot/cold), 'random'
+     * @param list<int> $anchors Ostatnie liczby wygrane (kotwice) używane do wyznaczenia sąsiadów ±1
+     * @param bool $withNeighbours Czy priorytetyzować sąsiadów (±1) kotwic w ramach kwot dekad
      * @return array{
      *     pool: list<int>,
      *     quotas: array<int, int>,
@@ -166,21 +168,55 @@ class DecadeDistributionService
      *         end: int,
      *         capacity: int,
      *         quota: int,
-     *         selected: list<int>
+     *         selected: list<int>,
+     *         neighbours_selected: list<int>
      *     }>,
      *     is_all_decades_covered: bool,
      *     decades_count: int,
-     *     decades_covered: int
+     *     decades_covered: int,
+     *     with_neighbours: bool,
+     *     neighbours_count: int,
+     *     anchors_used: list<int>
      * }
      */
     public function generateDecadePool(
         int $maxNumber,
         int $poolSize,
         array $frequencies = [],
-        string $strategy = 'hot'
+        string $strategy = 'hot',
+        array $anchors = [],
+        bool $withNeighbours = false
     ): array {
         $decades = $this->getDecadesForGame($maxNumber);
         $quotas = $this->calculateDecadeQuotas($poolSize, $maxNumber, $frequencies);
+
+        // Wyznacz sąsiadów ±1 kotwic, jeśli włączono opcję withNeighbours
+        $anchorsUsed = [];
+        $neighbourNumbers = [];
+        if ($withNeighbours) {
+            $validAnchors = array_values(array_filter(
+                $anchors,
+                static fn($n): bool => is_int($n) && $n >= 1 && $n <= $maxNumber
+            ));
+
+            // Jeśli nie podano kotwic, pobierz z najgorętszych liczb z częstotliwości
+            if (empty($validAnchors) && !empty($frequencies)) {
+                $freqCopy = $frequencies;
+                arsort($freqCopy);
+                $validAnchors = array_slice(array_keys($freqCopy), 0, min(8, $maxNumber));
+            }
+
+            $anchorsUsed = $validAnchors;
+            foreach ($anchorsUsed as $anchor) {
+                if ($anchor - 1 >= 1) {
+                    $neighbourNumbers[] = $anchor - 1;
+                }
+                if ($anchor + 1 <= $maxNumber) {
+                    $neighbourNumbers[] = $anchor + 1;
+                }
+            }
+            $neighbourNumbers = array_values(array_unique($neighbourNumbers));
+        }
 
         $selectedPool = [];
         $breakdown = [];
@@ -196,50 +232,36 @@ class DecadeDistributionService
 
                 if ($quota >= count($numbers)) {
                     $selectedInDecade = $numbers;
-                } elseif ($strategy === 'hot' && !empty($frequencies)) {
-                    // Sortuj malejąco po częstotliwości
-                    usort($numbers, static function (int $a, int $b) use ($frequencies): int {
-                        $fA = $frequencies[$a] ?? 0;
-                        $fB = $frequencies[$b] ?? 0;
-                        if ($fA !== $fB) {
-                            return $fB <=> $fA;
-                        }
-                        return $a <=> $b;
-                    });
-                    $selectedInDecade = array_slice($numbers, 0, $quota);
-                } elseif ($strategy === 'balanced' && !empty($frequencies)) {
-                    // Miks: 60% hot, 40% cold
-                    $hotTarget = max(1, (int) ceil($quota * 0.6));
-                    $coldTarget = $quota - $hotTarget;
+                } elseif ($withNeighbours && !empty($neighbourNumbers)) {
+                    // Wybierz najpierw sąsiadów znajdujących się w tej dekadzie
+                    $decadeNeighbours = array_values(array_intersect($numbers, $neighbourNumbers));
+                    $selectedNeighbours = $this->selectNumbersByStrategy(
+                        $decadeNeighbours,
+                        $quota,
+                        $frequencies,
+                        $strategy
+                    );
 
-                    usort($numbers, static function (int $a, int $b) use ($frequencies): int {
-                        $fA = $frequencies[$a] ?? 0;
-                        $fB = $frequencies[$b] ?? 0;
-                        if ($fA !== $fB) {
-                            return $fB <=> $fA;
-                        }
-                        return $a <=> $b;
-                    });
-
-                    $hotSelected = array_slice($numbers, 0, $hotTarget);
-                    $remainingNumbers = array_slice($numbers, $hotTarget);
-
-                    // Sortuj rosnąco po częstotliwości (najzimniejsze)
-                    usort($remainingNumbers, static function (int $a, int $b) use ($frequencies): int {
-                        $fA = $frequencies[$a] ?? 0;
-                        $fB = $frequencies[$b] ?? 0;
-                        if ($fA !== $fB) {
-                            return $fA <=> $fB;
-                        }
-                        return $a <=> $b;
-                    });
-
-                    $coldSelected = array_slice($remainingNumbers, 0, $coldTarget);
-                    $selectedInDecade = array_merge($hotSelected, $coldSelected);
+                    $neededMore = $quota - count($selectedNeighbours);
+                    if ($neededMore > 0) {
+                        $remaining = array_values(array_diff($numbers, $selectedNeighbours));
+                        $additional = $this->selectNumbersByStrategy(
+                            $remaining,
+                            $neededMore,
+                            $frequencies,
+                            $strategy
+                        );
+                        $selectedInDecade = array_merge($selectedNeighbours, $additional);
+                    } else {
+                        $selectedInDecade = $selectedNeighbours;
+                    }
                 } else {
-                    // Random
-                    shuffle($numbers);
-                    $selectedInDecade = array_slice($numbers, 0, $quota);
+                    $selectedInDecade = $this->selectNumbersByStrategy(
+                        $numbers,
+                        $quota,
+                        $frequencies,
+                        $strategy
+                    );
                 }
 
                 sort($selectedInDecade);
@@ -254,6 +276,7 @@ class DecadeDistributionService
                 'capacity' => $d['capacity'],
                 'quota' => $quota,
                 'selected' => $selectedInDecade,
+                'neighbours_selected' => array_values(array_intersect($selectedInDecade, $neighbourNumbers)),
             ];
         }
 
@@ -269,7 +292,80 @@ class DecadeDistributionService
             'is_all_decades_covered' => $isAllCovered,
             'decades_count' => $totalDecades,
             'decades_covered' => $coveredCount,
+            'with_neighbours' => $withNeighbours,
+            'neighbours_count' => count(array_intersect($selectedPool, $neighbourNumbers)),
+            'anchors_used' => $anchorsUsed,
         ];
+    }
+
+    /**
+     * Dobiera określoną liczbę elementów z listy według podanej strategii.
+     *
+     * @param list<int> $numbers
+     * @param array<int, int> $frequencies
+     * @return list<int>
+     */
+    private function selectNumbersByStrategy(
+        array $numbers,
+        int $count,
+        array $frequencies,
+        string $strategy
+    ): array {
+        if ($count <= 0 || empty($numbers)) {
+            return [];
+        }
+
+        if ($count >= count($numbers)) {
+            return $numbers;
+        }
+
+        if ($strategy === 'hot' && !empty($frequencies)) {
+            usort($numbers, static function (int $a, int $b) use ($frequencies): int {
+                $fA = $frequencies[$a] ?? 0;
+                $fB = $frequencies[$b] ?? 0;
+                if ($fA !== $fB) {
+                    return $fB <=> $fA;
+                }
+                return $a <=> $b;
+            });
+
+            return array_slice($numbers, 0, $count);
+        }
+
+        if ($strategy === 'balanced' && !empty($frequencies)) {
+            $hotTarget = max(1, (int) ceil($count * 0.6));
+            $coldTarget = $count - $hotTarget;
+
+            usort($numbers, static function (int $a, int $b) use ($frequencies): int {
+                $fA = $frequencies[$a] ?? 0;
+                $fB = $frequencies[$b] ?? 0;
+                if ($fA !== $fB) {
+                    return $fB <=> $fA;
+                }
+                return $a <=> $b;
+            });
+
+            $hotSelected = array_slice($numbers, 0, $hotTarget);
+            $remainingNumbers = array_slice($numbers, $hotTarget);
+
+            usort($remainingNumbers, static function (int $a, int $b) use ($frequencies): int {
+                $fA = $frequencies[$a] ?? 0;
+                $fB = $frequencies[$b] ?? 0;
+                if ($fA !== $fB) {
+                    return $fA <=> $fB;
+                }
+                return $a <=> $b;
+            });
+
+            $coldSelected = array_slice($remainingNumbers, 0, $coldTarget);
+
+            return array_merge($hotSelected, $coldSelected);
+        }
+
+        // Random
+        shuffle($numbers);
+
+        return array_slice($numbers, 0, $count);
     }
 
     /**

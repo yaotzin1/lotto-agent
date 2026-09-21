@@ -64,8 +64,11 @@ class ReActAgentService
 Pula wejściowa DOKŁADNIE $poolSize liczb MUSI pokrywać wszystkie dostępne dekady gry $game (zakres 1-$maxNumber).
 Każda dekada MUSI otrzymać reprezentantów wg następujących limitów:
 $quotaText
-Wybierz w ramach każdej dekady liczby o najwyższej częstotliwości/synergii.
-Użyj narzędzia 'evaluate_distribution', aby potwierdzić, że żadna dekada nie jest pusta ('is_all_decades_covered': true)!";
+Wybierz w ramach każdej dekady liczby o najwyższej częstotliwości/synergii.";
+            if ($includeNeighbours) {
+                $strategyInstruction .= "\nUWAGA: W ramach każdej dekady preferuj w pierwszej kolejności matematycznych sąsiadów (+1/-1) ostatnich wygranych liczb (kotwic), a brakujące pozycje kwoty uzupełnij liczbami o najwyższej częstotliwości/synergii.";
+            }
+            $strategyInstruction .= "\nUżyj narzędzia 'evaluate_distribution', aby potwierdzić, że żadna dekada nie jest pusta ('is_all_decades_covered': true)!";
         } elseif ($strategy === 'syndicate') {
             $strategyInstruction = "STRATEGIA SELEKCJI: Syndykat Klastrowy (Cluster-Breakout Strategy).
 Pula wejściowa DOKŁADNIE $poolSize liczb MUSI składać się z trzech składowych w ścisłych proporcjach:
@@ -291,7 +294,7 @@ Faza 4 [Synteza]: Zwróć końcowy wynik WYŁĄCZNIE w formacie JSON:
             $isFallback = true;
 
             if ($strategy === 'decades' || $coverDecades) {
-                $decadeRes = $this->decadeDistributionService->generateDecadePool($maxNumber, $poolSize, [], 'random');
+                $decadeRes = $this->decadeDistributionService->generateDecadePool($maxNumber, $poolSize, [], 'random', [], $includeNeighbours);
                 $finalPool = $decadeRes['pool'];
                 $finalReasoning = 'UWAGA: agent nie zwrócił użytecznego wyniku. Wygenerowano losową pulę zbalansowaną dekadowo w trybie awaryjnym.';
             } elseif (count($lastEvaluatedPool) >= $pickCount) {

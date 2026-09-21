@@ -170,6 +170,9 @@ docker compose run --rm app php bin/console app:lotto-generator --game=Lotto --p
 
 # Run with AI candidate pool and Fractal rolling overlap (Mode 5):
 docker compose run --rm app php bin/console app:lotto-generator --game=Lotto --pool-mode=AI --strategy=syndicate --mode=5
+
+# Run with Decade-Balanced pool prioritizing ±1 neighbours of the latest draw (Mode 8):
+docker compose run --rm app php bin/console app:lotto-generator --game=Lotto --pool-mode=Decades --with-neighbours --pool-size=15 --mode=8 --bets=15
 ```
 
 ### 7. ReAct Agent AI (`app:lotto-agent`)

@@ -96,6 +96,9 @@ php bin/console app:lotto-generator --game=Lotto --pool-mode=AI --strategy=syndi
 # Decade-Balanced (15 zakładów, równomierne pokrycie 5 dekad po 3 liczby: 15 liczb):
 php bin/console app:lotto-generator --game=Lotto --pool-mode=Decades --pool-size=15 --mode=8 --bets=15
 
+# Decade-Balanced + Sąsiedzi (15 zakładów, pokrycie 5 dekad z priorytetem sąsiadów ±1 ostatniego losowania):
+php bin/console app:lotto-generator --game=Lotto --pool-mode=Decades --with-neighbours --pool-size=15 --mode=8 --bets=15
+
 # Semi-Pro (100 zakładów, rankingowe pełne pokrycie 49 liczb):
 php bin/console app:lotto-generator --game=Lotto --pool-mode=Manual --mode=8 --bets=100
 ```
