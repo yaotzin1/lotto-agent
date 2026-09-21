@@ -13,7 +13,8 @@ class ReActAgentService
         private readonly GeminiApiClient $geminiApiClient,
         private readonly ToolRegistry $toolRegistry,
         private readonly GameRegistryService $gameRegistryService,
-        private readonly LoggerInterface $logger
+        private readonly LoggerInterface $logger,
+        private readonly DecadeDistributionService $decadeDistributionService = new DecadeDistributionService()
     ) {
     }
 
@@ -36,7 +37,8 @@ class ReActAgentService
         ?callable $onStepCallback = null,
         ?int $sessions = null,
         ?int $months = null,
-        bool $includeNeighbours = false
+        bool $includeNeighbours = false,
+        bool $coverDecades = false
     ): array {
         if (is_callable($strategy)) {
             $onStepCallback = $strategy;
@@ -50,7 +52,24 @@ class ReActAgentService
         $maxNumber = $config['from'] ?? 49;
         $pickCount = $config['pick'] ?? 6;
 
-        if ($strategy === 'syndicate') {
+        if ($strategy === 'decades' || $coverDecades) {
+            $decQuotas = $this->decadeDistributionService->calculateDecadeQuotas($poolSize, $maxNumber);
+            $decades = $this->decadeDistributionService->getDecadesForGame($maxNumber);
+            $quotaLines = [];
+            foreach ($decades as $idx => $d) {
+                $quotaLines[] = sprintf("• Dekada %s: %d liczb", $d['label'], $decQuotas[$idx] ?? 0);
+            }
+            $quotaText = implode("\n", $quotaLines);
+            $strategyInstruction = "STRATEGIA SELEKCJI: Równomierne Pokrycie Dekad (Decade Balance).
+Pula wejściowa DOKŁADNIE $poolSize liczb MUSI pokrywać wszystkie dostępne dekady gry $game (zakres 1-$maxNumber).
+Każda dekada MUSI otrzymać reprezentantów wg następujących limitów:
+$quotaText
+Wybierz w ramach każdej dekady liczby o najwyższej częstotliwości/synergii.";
+            if ($includeNeighbours) {
+                $strategyInstruction .= "\nUWAGA: W ramach każdej dekady preferuj w pierwszej kolejności matematycznych sąsiadów (+1/-1) ostatnich wygranych liczb (kotwic), a brakujące pozycje kwoty uzupełnij liczbami o najwyższej częstotliwości/synergii.";
+            }
+            $strategyInstruction .= "\nUżyj narzędzia 'evaluate_distribution', aby potwierdzić, że żadna dekada nie jest pusta ('is_all_decades_covered': true)!";
+        } elseif ($strategy === 'syndicate') {
             $strategyInstruction = "STRATEGIA SELEKCJI: Syndykat Klastrowy (Cluster-Breakout Strategy).
 Pula wejściowa DOKŁADNIE $poolSize liczb MUSI składać się z trzech składowych w ścisłych proporcjach:
 1. SĄSIEDZI (ok. 60% puli): Wybierz matematycznych sąsiadów (+1/-1) ostatnich liczb wygranych o najwyższej sile klastra (użyj narzędzia 'fetch_neighbours_analysis').
@@ -274,7 +293,11 @@ Faza 4 [Synteza]: Zwróć końcowy wynik WYŁĄCZNIE w formacie JSON:
         if (count($finalPool) < $pickCount) {
             $isFallback = true;
 
-            if (count($lastEvaluatedPool) >= $pickCount) {
+            if ($strategy === 'decades' || $coverDecades) {
+                $decadeRes = $this->decadeDistributionService->generateDecadePool($maxNumber, $poolSize, [], 'random', [], $includeNeighbours);
+                $finalPool = $decadeRes['pool'];
+                $finalReasoning = 'UWAGA: agent nie zwrócił użytecznego wyniku. Wygenerowano losową pulę zbalansowaną dekadowo w trybie awaryjnym.';
+            } elseif (count($lastEvaluatedPool) >= $pickCount) {
                 // Pula, którą agent sam poddał ewaluacji — bez dosypywania 1,2,3...
                 $finalPool = array_slice($lastEvaluatedPool, 0, $poolSize);
                 $finalReasoning = sprintf(

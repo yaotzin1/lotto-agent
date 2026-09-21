@@ -11,6 +11,7 @@ use App\Service\LottoApiClient;
 use App\Service\ReActAgentService;
 use App\Service\BetPipelineRequest;
 use App\Service\BetPipelineService;
+use App\Service\DecadeDistributionService;
 use App\Service\ExtraNumbersGenerator;
 use App\Service\HistoricalDataProvider;
 use App\Service\StatisticalOptimizerService;
@@ -48,6 +49,7 @@ class LottoTuiCommand extends Command
         private readonly BetPipelineService $betPipeline,
         private readonly StatsWindowRenderer $statsWindowRenderer,
         private readonly StrideBacktestService $strideService,
+        private readonly DecadeDistributionService $decadeDistributionService,
         private readonly LoggerInterface $logger
     ) {
         parent::__construct();
@@ -63,7 +65,9 @@ class LottoTuiCommand extends Command
         $this->addOption('bets', 'b', InputOption::VALUE_REQUIRED, 'Ile zakładów ma wygenerować system?');
         $this->addOption('strategy', 'st', InputOption::VALUE_REQUIRED, 'Strategia doboru liczb przez AI (balanced/aggressive)');
         $this->addOption('pool-size', 'ps', InputOption::VALUE_REQUIRED, 'Rozmiar puli liczb wybieranych przez AI');
-        $this->addOption('pool-mode', 'pm', InputOption::VALUE_REQUIRED, 'Metoda doboru puli (AI/Manual)');
+        $this->addOption('pool-mode', 'pm', InputOption::VALUE_REQUIRED, 'Metoda doboru puli (AI/Stride/Decades/Manual)');
+        $this->addOption('cover-decades', 'cd', InputOption::VALUE_NONE, 'Wymuś równomierne pokrycie wszystkich dekad');
+        $this->addOption('decade-strategy', null, InputOption::VALUE_REQUIRED, 'Strategia doboru wewnątrz dekad (hot/balanced/random)', 'hot');
         $this->addOption('pool', null, InputOption::VALUE_REQUIRED, 'Pula liczb dla trybu Manual (np. "all" albo "1,5,12,18")');
         $this->addOption('max-rows', null, InputOption::VALUE_REQUIRED, 'Ogranicz liczbę wierszy w tabeli wyników (domyślnie: wszystkie)');
         $this->addOption('bankers-per-bet', null, InputOption::VALUE_REQUIRED, 'Tryb 6: ilu bankierów na jednym kuponie');
@@ -76,6 +80,8 @@ class LottoTuiCommand extends Command
         $this->addOption('hot', null, InputOption::VALUE_REQUIRED, 'Tryb 3: liczby gorące o zwiększonej wadze');
         $this->addOption('mode', 'm', InputOption::VALUE_REQUIRED, 'Tryb pracy generatora (1-8)');
         $this->addOption('neighbours', 'nb', InputOption::VALUE_NONE, 'Czy uwzględniać w analizie liczby sąsiadujące (+1/-1)?');
+        $this->addOption('with-neighbours', 'wn', InputOption::VALUE_NONE, 'W trybie Decades lub AI: uwzględniaj sąsiadów (±1) ostatnich losowań');
+        $this->addOption('neighbours-ratio', 'nr', InputOption::VALUE_REQUIRED, 'Docelowy procentowy udział sąsiadów w puli (np. 60, 60%, 0.6 - domyślnie: 60%)', '60%');
         $this->addOption('bankers', 'bk', InputOption::VALUE_REQUIRED, 'Liczby bankierów oddzielone przecinkami/spacją (dla trybów 4 i 6)');
         $this->addOption('weight', 'w', InputOption::VALUE_REQUIRED, 'Waga dla gorących liczb w generatorze ważonym (dla trybu 3)');
         $this->addOption('stride', null, InputOption::VALUE_REQUIRED, 'Krok kroczenia wstecz dla trybu Stride (np. 257 lub 127)');
@@ -123,6 +129,33 @@ class LottoTuiCommand extends Command
         $tui->run();
 
         return $result ?? $default ?? '';
+    }
+
+    private function promptConfirm(string $question, bool $default = false): bool
+    {
+        $answer = $this->promptSelect($question, [
+            'y' => 'Tak',
+            'n' => 'Nie',
+        ], $default ? 'y' : 'n');
+
+        return $answer === 'y';
+    }
+
+    private function parseRatio(?string $raw, float $default = 0.6): float
+    {
+        if ($raw === null || trim($raw) === '') {
+            return $default;
+        }
+        $clean = trim(str_replace('%', '', $raw));
+        if (!is_numeric($clean)) {
+            return $default;
+        }
+        $val = (float) $clean;
+        if ($val > 1.0) {
+            $val /= 100.0;
+        }
+
+        return max(0.1, min(0.9, $val));
     }
 
     private function promptInput(string $question, string $default = ''): string
@@ -184,19 +217,24 @@ class LottoTuiCommand extends Command
             }
         }
 
+        $coverDecades = (bool) $input->getOption('cover-decades');
         $poolModeOpt = $input->getOption('pool-mode');
-        if ($poolModeOpt && in_array(strtolower($poolModeOpt), ['ai', 'manual', 'stride'], true)) {
+        if ($poolModeOpt && in_array(strtolower($poolModeOpt), ['ai', 'manual', 'stride', 'decades', 'decade'], true)) {
             $poolMode = match (strtolower($poolModeOpt)) {
                 'ai' => 'AI',
                 'stride' => 'Stride',
+                'decades', 'decade' => 'Decades',
                 default => 'Manual',
             };
+        } elseif ($coverDecades && !$poolModeOpt) {
+            $poolMode = 'Decades';
         } else {
             $poolMode = $this->promptSelect('Jak chcesz wygenerować pulę wejściową liczb?', [
                 'AI' => 'AI (Na podstawie statystyk LOTTO API)',
                 'Stride' => 'Stride / Kroczenie N (Losowania wstecz co N kroków + sąsiedzi)',
+                'Decades' => 'Dekady (Równomierne pokrycie wszystkich dekad bębna)',
                 'Manual' => 'Ręcznie (Wpisz własne liczby)',
-            ], 'AI');
+            ], $coverDecades ? 'Decades' : 'AI');
         }
 
         $strategyOpt = $input->getOption('strategy');
@@ -213,7 +251,8 @@ class LottoTuiCommand extends Command
             }
         }
 
-        $includeNeighbours = (bool)$input->getOption('neighbours');
+        $includeNeighbours = (bool) ($input->getOption('with-neighbours') || $input->getOption('neighbours'));
+        $neighboursRatio = $this->parseRatio((string) $input->getOption('neighbours-ratio'));
 
         $fullPool = [];
 
@@ -253,7 +292,7 @@ class LottoTuiCommand extends Command
             $monthsOpt = $input->getOption('months');
             $months = $monthsOpt !== null && is_numeric($monthsOpt) ? (int)$monthsOpt : null;
 
-            $result = $this->reactAgentService->runAgentLoop($gameType, $poolSize, $aiStrategy, $onStepCallback, $sessions, $months, $includeNeighbours);
+            $result = $this->reactAgentService->runAgentLoop($gameType, $poolSize, $aiStrategy, $onStepCallback, $sessions, $months, $includeNeighbours, $coverDecades);
             $fullPool = $result['pool'] ?? $result['selected_pool'] ?? [];
             sort($fullPool);
 
@@ -361,6 +400,88 @@ class LottoTuiCommand extends Command
                 $io->error('Błąd pobierania puli Stride: ' . $e->getMessage());
                 return Command::FAILURE;
             }
+        } elseif ($poolMode === 'Decades') {
+            $maxNum = $game['from'] ?? 49;
+            $decadesCount = (int) ceil($maxNum / 10);
+            $defaultPoolSize = (string) min($maxNum, max($game['pick'], 3 * $decadesCount));
+
+            $poolSizeOpt = $input->getOption('pool-size');
+            if ($poolSizeOpt && is_numeric($poolSizeOpt) && (int) $poolSizeOpt >= $game['pick']) {
+                $poolSize = (int) $poolSizeOpt;
+            } else {
+                $poolSize = (int) $this->promptInput(
+                    sprintf("Ile liczb ma zawierać pula dekadowa? (gra %s: %d dekad, rekomendowane: %s)", $gameType, $decadesCount, $defaultPoolSize),
+                    $defaultPoolSize
+                );
+            }
+            $poolSize = max($game['pick'], min($maxNum, $poolSize));
+
+            $sessions = (int) ($input->getOption('sessions') ?: 50);
+            $history = $this->historicalDataProvider->fetch($gameType, $sessions);
+            $frequencies = $history['frequencies'] ?? [];
+
+            $stratOpt = $input->getOption('decade-strategy');
+            if ($stratOpt && in_array($stratOpt, ['hot', 'balanced', 'random'], true)) {
+                $decadeStrategy = (string) $stratOpt;
+            } elseif ($input->isInteractive()) {
+                $decadeStrategy = $this->promptSelect('Wybierz strategię wyboru liczb wewnątrz dekad:', [
+                    'hot' => 'Gorące (najczęstsze liczby w historii dla danej dekady)',
+                    'balanced' => 'Zbalansowana (60% gorące, 40% zimne)',
+                    'random' => 'Losowa (równomierny wybór losowy w dekadzie)',
+                ], 'hot');
+            } else {
+                $decadeStrategy = 'hot';
+            }
+
+            if (!$input->hasParameterOption('--with-neighbours') && !$input->hasParameterOption('--neighbours') && !$input->hasParameterOption('-wn') && !$input->hasParameterOption('-nb') && $input->isInteractive()) {
+                $includeNeighbours = $this->promptSelect('Czy uwzględnić w dekadach sąsiadów (±1) z ostatniego losowania?', [
+                    'yes' => 'Tak - priorytetyzuj sąsiadów ±1 w dekadach',
+                    'no' => 'Nie - czysta strategia częstotliwościowa',
+                ], 'no') === 'yes';
+            }
+
+            $latestDraw = $history['draws'][0] ?? [];
+
+            $decadeResult = $this->decadeDistributionService->generateDecadePool(
+                $maxNum,
+                $poolSize,
+                $frequencies,
+                $decadeStrategy,
+                $latestDraw,
+                $includeNeighbours,
+                $neighboursRatio
+            );
+            $fullPool = $decadeResult['pool'];
+
+            $io->section(sprintf(
+                'Rozkład dekadowy puli (%d liczb z %d)%s:',
+                count($fullPool),
+                $maxNum,
+                $includeNeighbours ? sprintf(' [z sąsiadami ±1, limit: %d%%]', (int) round($neighboursRatio * 100)) : ''
+            ));
+            if ($includeNeighbours && !empty($decadeResult['anchors_used'])) {
+                $io->text(sprintf(' Kotwice wygranych (baza sąsiadów): [%s]', implode(', ', $decadeResult['anchors_used'])));
+            }
+            foreach ($decadeResult['breakdown'] as $b) {
+                $nbrInfo = '';
+                if ($includeNeighbours && !empty($b['neighbours_selected'])) {
+                    $nbrInfo = sprintf(' (w tym sąsiedzi ±1: %s)', implode(', ', $b['neighbours_selected']));
+                }
+                $io->text(sprintf(
+                    ' • Dekada %-7s: %2d liczb -> [%s]%s',
+                    $b['label'],
+                    $b['quota'],
+                    implode(', ', $b['selected']),
+                    $nbrInfo
+                ));
+            }
+
+            $io->success(sprintf(
+                'Pula dekadowa (%d liczb)%s: %s',
+                count($fullPool),
+                $includeNeighbours ? sprintf(' [%d sąsiadów]', $decadeResult['neighbours_count'] ?? 0) : '',
+                implode(', ', $fullPool)
+            ));
         } else {
             $poolOpt = $input->getOption('pool');
             $maxNum = $game['from'] ?? 49;
@@ -467,6 +588,9 @@ class LottoTuiCommand extends Command
             blockCount: $mode === '2' ? $askInt('block-count', 'Ile blokow:', '5') : 5,
             hotNumbers: $mode === '3' ? $askNumbers('hot', 'Wpisz liczby GORACE (wieksza waga):') : [],
             weight: $mode === '3' ? $askInt('weight', 'Waga (2-10):', '5') : 5,
+            coverDecades: $coverDecades || $poolMode === 'Decades',
+            withNeighbours: $includeNeighbours,
+            neighboursRatio: $neighboursRatio,
         );
 
         $io->text('Generowanie pakietu (tryb ' . $mode . ')...');

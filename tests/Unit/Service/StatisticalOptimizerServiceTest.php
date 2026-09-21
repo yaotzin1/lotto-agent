@@ -247,4 +247,25 @@ class StatisticalOptimizerServiceTest extends TestCase
         $this->assertTrue($result['report']['is_full_coverage_guaranteed']);
         $this->assertEquals(100.0, $result['report']['pool_coverage_pct']);
     }
+
+    public function testCalculateBetFitnessWithNeighboursAllowsTwoPairsWithoutPenalty(): void
+    {
+        $bet = [14, 15, 22, 23, 31, 41]; // 2 pary sąsiadów: 14-15 i 22-23
+        $pairMatrix = [];
+        $frequencies = array_fill_keys(range(1, 49), 10);
+        $gaussParams = $this->service->calculateGaussianParameters(49, 6);
+
+        // Bez withNeighbours (domyślnie false): 2 pary to kara -100
+        $fitDefault = $this->service->calculateBetFitness($bet, $pairMatrix, $frequencies, $gaussParams, 49, false);
+
+        // Z withNeighbours = true: 2 pary są dozwolone bez kary
+        $fitWithNeighbours = $this->service->calculateBetFitness($bet, $pairMatrix, $frequencies, $gaussParams, 49, true);
+
+        $this->assertEquals($fitDefault['total_score'] + 100, $fitWithNeighbours['total_score']);
+
+        // Ciąg 3 liczb (np. 14, 15, 16) nadal otrzymuje twardą karę nawet z withNeighbours = true
+        $bet3 = [14, 15, 16, 22, 31, 41];
+        $fit3 = $this->service->calculateBetFitness($bet3, $pairMatrix, $frequencies, $gaussParams, 49, true);
+        $this->assertLessThan($fitWithNeighbours['total_score'] - 150, $fit3['total_score']);
+    }
 }

@@ -11,6 +11,7 @@ use App\Service\LottoApiClient;
 use App\Service\ReActAgentService;
 use App\Service\BetPipelineRequest;
 use App\Service\BetPipelineService;
+use App\Service\DecadeDistributionService;
 use App\Service\ExtraNumbersGenerator;
 use App\Service\HistoricalDataProvider;
 use App\Service\StatisticalOptimizerService;
@@ -40,6 +41,7 @@ class LottoGeneratorCommand extends Command
         private readonly ExtraNumbersGenerator $extraNumbersGenerator,
         private readonly BetPipelineService $betPipeline,
         private readonly StatsWindowRenderer $statsWindowRenderer,
+        private readonly DecadeDistributionService $decadeDistributionService,
         private readonly LoggerInterface $logger
     ) {
         parent::__construct();
@@ -52,7 +54,9 @@ class LottoGeneratorCommand extends Command
         $this->addOption('bets', 'b', InputOption::VALUE_REQUIRED, 'Ile zakładów ma wygenerować system?');
         $this->addOption('strategy', 'st', InputOption::VALUE_REQUIRED, 'Strategia doboru liczb przez AI (balanced/aggressive)');
         $this->addOption('pool-size', 'p', InputOption::VALUE_REQUIRED, 'Rozmiar puli liczb wybieranych przez AI');
-        $this->addOption('pool-mode', 'pm', InputOption::VALUE_REQUIRED, 'Metoda doboru puli (AI/Manual)');
+        $this->addOption('pool-mode', 'pm', InputOption::VALUE_REQUIRED, 'Metoda doboru puli (AI/Decades/Manual)');
+        $this->addOption('cover-decades', 'cd', InputOption::VALUE_NONE, 'Wymuś równomierne pokrycie wszystkich dekad');
+        $this->addOption('decade-strategy', null, InputOption::VALUE_REQUIRED, 'Strategia doboru wewnątrz dekad (hot/balanced/random)', 'hot');
         $this->addOption('pool', null, InputOption::VALUE_REQUIRED, 'Pula liczb dla trybu Manual (np. "all" albo "1,5,12,18")');
         $this->addOption('pick', null, InputOption::VALUE_REQUIRED, 'Ile liczb skreślać na kuponie (tylko gry o zmiennej liczbie skreśleń: MultiMulti, Keno)');
         $this->addOption('max-rows', null, InputOption::VALUE_REQUIRED, 'Ogranicz liczbę wierszy w tabeli wyników (domyślnie: wszystkie)');
@@ -69,6 +73,9 @@ class LottoGeneratorCommand extends Command
         $this->addOption('block-count', null, InputOption::VALUE_REQUIRED, 'Tryb 2: liczba bloków');
         $this->addOption('hot', null, InputOption::VALUE_REQUIRED, 'Tryb 3: liczby gorące o zwiększonej wadze');
         $this->addOption('weight', null, InputOption::VALUE_REQUIRED, 'Tryb 3: waga liczb gorących (2-10)');
+        $this->addOption('with-neighbours', 'wn', InputOption::VALUE_NONE, 'W trybie Decades lub AI: uwzględniaj sąsiadów (±1) ostatnich losowań');
+        $this->addOption('neighbours', null, InputOption::VALUE_NONE, 'Alias dla --with-neighbours');
+        $this->addOption('neighbours-ratio', 'nr', InputOption::VALUE_REQUIRED, 'Docelowy procentowy udział sąsiadów w puli (np. 60, 60%, 0.6 - domyślnie: 60%)', '60%');
     }
 
     /**
@@ -92,6 +99,23 @@ class LottoGeneratorCommand extends Command
         preg_match_all('/\d+/', (string) $raw, $m);
 
         return array_values(array_unique(array_map('intval', $m[0] ?? [])));
+    }
+
+    private function parseRatio(?string $raw, float $default = 0.6): float
+    {
+        if ($raw === null || trim($raw) === '') {
+            return $default;
+        }
+        $clean = trim(str_replace('%', '', $raw));
+        if (!is_numeric($clean)) {
+            return $default;
+        }
+        $val = (float) $clean;
+        if ($val > 1.0) {
+            $val /= 100.0;
+        }
+
+        return max(0.1, min(0.9, $val));
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -131,14 +155,22 @@ class LottoGeneratorCommand extends Command
             }
         }
 
+        $coverDecades = (bool) $input->getOption('cover-decades');
         $poolModeOpt = $input->getOption('pool-mode');
-        if ($poolModeOpt && in_array(strtolower($poolModeOpt), ['ai', 'manual'], true)) {
-            $poolMode = strtolower($poolModeOpt) === 'ai' ? 'AI' : 'Manual';
+        if ($poolModeOpt && in_array(strtolower($poolModeOpt), ['ai', 'decades', 'decade', 'manual'], true)) {
+            $poolMode = match (strtolower($poolModeOpt)) {
+                'ai' => 'AI',
+                'decades', 'decade' => 'Decades',
+                default => 'Manual',
+            };
+        } elseif ($coverDecades && !$poolModeOpt) {
+            $poolMode = 'Decades';
         } else {
             $poolMode = $io->choice('Jak chcesz wygenerować pulę wejściową liczb?', [
                 'AI' => 'AI (Na podstawie statystyk LOTTO API)',
+                'Decades' => 'Dekady (Równomierne pokrycie wszystkich dekad bębna)',
                 'Manual' => 'Ręcznie (Wpisz własne liczby)',
-            ], 'AI');
+            ], $coverDecades ? 'Decades' : 'AI');
         }
 
         $strategyOpt = $input->getOption('strategy');
@@ -155,9 +187,15 @@ class LottoGeneratorCommand extends Command
             }
         }
 
+        $withNeighbours = (bool) ($input->getOption('with-neighbours') || $input->getOption('neighbours'));
+        $neighboursRatio = $this->parseRatio((string) $input->getOption('neighbours-ratio'));
         $fullPool = [];
 
         if ($poolMode === 'AI') {
+            if (!$input->hasParameterOption('--with-neighbours') && !$input->hasParameterOption('--neighbours') && !$input->hasParameterOption('-wn') && $input->isInteractive()) {
+                $withNeighbours = $io->confirm('Czy uwzględniać w analizie liczby sąsiadujące (np. +1/-1)?', false);
+            }
+
             $sessionsOpt = $input->getOption('sessions');
             $sessions = $sessionsOpt !== null && is_numeric($sessionsOpt) ? (int)$sessionsOpt : null;
             if (!$sessions) {
@@ -188,7 +226,7 @@ class LottoGeneratorCommand extends Command
                 }
             };
 
-            $result = $this->reactAgentService->runAgentLoop($gameType, $poolSize, $aiStrategy, $onStepCallback, $sessions);
+            $result = $this->reactAgentService->runAgentLoop($gameType, $poolSize, $aiStrategy, $onStepCallback, $sessions, null, $withNeighbours, $coverDecades);
             $fullPool = $result['pool'] ?? $result['selected_pool'] ?? [];
             sort($fullPool);
 
@@ -204,6 +242,76 @@ class LottoGeneratorCommand extends Command
                 $io->text("<comment>Uzasadnienie ReAct Agent:</comment> " . $result['reasoning']);
             }
             $io->success("Pula AI (" . count($fullPool) . " liczb): " . implode(', ', $fullPool));
+        } elseif ($poolMode === 'Decades') {
+            if (!$input->hasParameterOption('--with-neighbours') && !$input->hasParameterOption('--neighbours') && !$input->hasParameterOption('-wn') && $input->isInteractive()) {
+                $withNeighbours = $io->confirm('Czy uwzględnić w dekadach sąsiadów (±1) z ostatniego losowania?', false);
+            }
+
+            $maxNum = $game['from'] ?? 49;
+            $decadesCount = (int) ceil($maxNum / 10);
+            $defaultPoolSize = (string) min($maxNum, max($game['pick'], 3 * $decadesCount));
+
+            $poolSizeOpt = $input->getOption('pool-size');
+            if ($poolSizeOpt && is_numeric($poolSizeOpt) && (int) $poolSizeOpt >= $game['pick']) {
+                $poolSize = (int) $poolSizeOpt;
+            } else {
+                $poolSize = (int) $io->ask(
+                    sprintf("Ile liczb ma zawierać pula dekadowa? (gra %s: %d dekad, rekomendowane: %s liczb)", $gameType, $decadesCount, $defaultPoolSize),
+                    $defaultPoolSize
+                );
+            }
+            $poolSize = max($game['pick'], min($maxNum, $poolSize));
+
+            $sessions = (int) ($input->getOption('sessions') ?: 50);
+            $history = $this->historicalDataProvider->fetch($gameType, $sessions);
+            $frequencies = $history['frequencies'] ?? [];
+            $latestDraw = $history['draws'][0] ?? [];
+
+            $decadeStrategy = (string) ($input->getOption('decade-strategy') ?: 'hot');
+            if (!in_array($decadeStrategy, ['hot', 'balanced', 'random'], true)) {
+                $decadeStrategy = 'hot';
+            }
+
+            $decadeResult = $this->decadeDistributionService->generateDecadePool(
+                $maxNum,
+                $poolSize,
+                $frequencies,
+                $decadeStrategy,
+                $latestDraw,
+                $withNeighbours,
+                $neighboursRatio
+            );
+            $fullPool = $decadeResult['pool'];
+
+            $io->section(sprintf(
+                'Rozkład dekadowy puli (%d liczb z %d)%s:',
+                count($fullPool),
+                $maxNum,
+                $withNeighbours ? sprintf(' [z sąsiadami ±1, limit: %d%%]', (int) round($neighboursRatio * 100)) : ''
+            ));
+            if ($withNeighbours && !empty($decadeResult['anchors_used'])) {
+                $io->text(sprintf(' Kotwice wygranych (baza sąsiadów): [%s]', implode(', ', $decadeResult['anchors_used'])));
+            }
+            foreach ($decadeResult['breakdown'] as $b) {
+                $nbrInfo = '';
+                if ($withNeighbours && !empty($b['neighbours_selected'])) {
+                    $nbrInfo = sprintf(' (w tym sąsiedzi ±1: %s)', implode(', ', $b['neighbours_selected']));
+                }
+                $io->text(sprintf(
+                    ' • Dekada %-7s: %2d liczb -> [%s]%s',
+                    $b['label'],
+                    $b['quota'],
+                    implode(', ', $b['selected']),
+                    $nbrInfo
+                ));
+            }
+
+            $io->success(sprintf(
+                'Pula dekadowa (%d liczb)%s: %s',
+                count($fullPool),
+                $withNeighbours ? sprintf(' [%d sąsiadów]', $decadeResult['neighbours_count'] ?? 0) : '',
+                implode(', ', $fullPool)
+            ));
         } else {
             $poolOpt = $input->getOption('pool');
             if ($poolOpt !== null && strtolower(trim((string) $poolOpt)) === 'all') {
@@ -295,6 +403,9 @@ class LottoGeneratorCommand extends Command
                     : ''
             ),
             weight: (int) ($mode === '3' ? $this->optionOrAsk($input, $io, 'weight', 'Waga (2-10):', '5') : 5),
+            coverDecades: $coverDecades || $poolMode === 'Decades',
+            withNeighbours: $withNeighbours,
+            neighboursRatio: $neighboursRatio,
         );
 
         $io->text('Generowanie pakietu (tryb ' . $mode . ')...');

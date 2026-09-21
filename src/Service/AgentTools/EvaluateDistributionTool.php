@@ -144,6 +144,7 @@ class EvaluateDistributionTool implements LottoToolInterface
             'decade_distribution' => array_map(static fn(array $d): int => $d['count'], $decades),
             'decades_covered' => count(array_filter($decades, static fn(array $d): bool => $d['count'] > 0)),
             'decades_available' => $decadesAvailable,
+            'is_all_decades_covered' => count(array_filter($decades, static fn(array $d): bool => $d['count'] === 0)) === 0,
             'empty_decades' => array_keys(array_filter($decades, static fn(array $d): bool => $d['count'] === 0)),
             'max_numbers_per_decade_allowed' => $maxPerDecade,
             'decade_capacity_vs_pick' => sprintf('%d / %d', $decadeCapacity, $pick),
