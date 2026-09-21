@@ -81,6 +81,7 @@ class LottoTuiCommand extends Command
         $this->addOption('mode', 'm', InputOption::VALUE_REQUIRED, 'Tryb pracy generatora (1-8)');
         $this->addOption('neighbours', 'nb', InputOption::VALUE_NONE, 'Czy uwzględniać w analizie liczby sąsiadujące (+1/-1)?');
         $this->addOption('with-neighbours', 'wn', InputOption::VALUE_NONE, 'W trybie Decades lub AI: uwzględniaj sąsiadów (±1) ostatnich losowań');
+        $this->addOption('neighbours-ratio', 'nr', InputOption::VALUE_REQUIRED, 'Docelowy procentowy udział sąsiadów w puli (np. 60, 60%, 0.6 - domyślnie: 60%)', '60%');
         $this->addOption('bankers', 'bk', InputOption::VALUE_REQUIRED, 'Liczby bankierów oddzielone przecinkami/spacją (dla trybów 4 i 6)');
         $this->addOption('weight', 'w', InputOption::VALUE_REQUIRED, 'Waga dla gorących liczb w generatorze ważonym (dla trybu 3)');
         $this->addOption('stride', null, InputOption::VALUE_REQUIRED, 'Krok kroczenia wstecz dla trybu Stride (np. 257 lub 127)');
@@ -128,6 +129,33 @@ class LottoTuiCommand extends Command
         $tui->run();
 
         return $result ?? $default ?? '';
+    }
+
+    private function promptConfirm(string $question, bool $default = false): bool
+    {
+        $answer = $this->promptSelect($question, [
+            'y' => 'Tak',
+            'n' => 'Nie',
+        ], $default ? 'y' : 'n');
+
+        return $answer === 'y';
+    }
+
+    private function parseRatio(?string $raw, float $default = 0.6): float
+    {
+        if ($raw === null || trim($raw) === '') {
+            return $default;
+        }
+        $clean = trim(str_replace('%', '', $raw));
+        if (!is_numeric($clean)) {
+            return $default;
+        }
+        $val = (float) $clean;
+        if ($val > 1.0) {
+            $val /= 100.0;
+        }
+
+        return max(0.1, min(0.9, $val));
     }
 
     private function promptInput(string $question, string $default = ''): string
@@ -224,6 +252,7 @@ class LottoTuiCommand extends Command
         }
 
         $includeNeighbours = (bool) ($input->getOption('with-neighbours') || $input->getOption('neighbours'));
+        $neighboursRatio = $this->parseRatio((string) $input->getOption('neighbours-ratio'));
 
         $fullPool = [];
 
@@ -419,11 +448,17 @@ class LottoTuiCommand extends Command
                 $frequencies,
                 $decadeStrategy,
                 $latestDraw,
-                $includeNeighbours
+                $includeNeighbours,
+                $neighboursRatio
             );
             $fullPool = $decadeResult['pool'];
 
-            $io->section(sprintf('Rozkład dekadowy puli (%d liczb z %d)%s:', count($fullPool), $maxNum, $includeNeighbours ? ' [z sąsiadami ±1]' : ''));
+            $io->section(sprintf(
+                'Rozkład dekadowy puli (%d liczb z %d)%s:',
+                count($fullPool),
+                $maxNum,
+                $includeNeighbours ? sprintf(' [z sąsiadami ±1, limit: %d%%]', (int) round($neighboursRatio * 100)) : ''
+            ));
             if ($includeNeighbours && !empty($decadeResult['anchors_used'])) {
                 $io->text(sprintf(' Kotwice wygranych (baza sąsiadów): [%s]', implode(', ', $decadeResult['anchors_used'])));
             }
@@ -554,6 +589,8 @@ class LottoTuiCommand extends Command
             hotNumbers: $mode === '3' ? $askNumbers('hot', 'Wpisz liczby GORACE (wieksza waga):') : [],
             weight: $mode === '3' ? $askInt('weight', 'Waga (2-10):', '5') : 5,
             coverDecades: $coverDecades || $poolMode === 'Decades',
+            withNeighbours: $includeNeighbours,
+            neighboursRatio: $neighboursRatio,
         );
 
         $io->text('Generowanie pakietu (tryb ' . $mode . ')...');

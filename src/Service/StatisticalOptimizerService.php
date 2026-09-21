@@ -354,6 +354,8 @@ class StatisticalOptimizerService
         $gaussParams = $this->calculateGaussianParameters($maxNumber, $pick);
         $maxPerDecade = $this->maxPerDecade($pick, $maxNumber);
         $coverDecades = $options['cover_decades'] ?? false;
+        $withNeighbours = $options['with_neighbours'] ?? false;
+        $maxAdjacentPairs = $withNeighbours ? 2 : 1;
         $poolDecades = array_values(array_unique(array_map(fn($n) => (int)floor(($n - 1) / 10), $pool)));
 
         $usageCounts = array_fill_keys($pool, 0);
@@ -424,8 +426,8 @@ class StatisticalOptimizerService
                             }
                         }
 
-                        // Jeśli dodanie kandydata tworzy 3 liczby pod rząd lub więcej niż 1 parę sąsiadów -> ODRZUĆ
-                        if ($maxConsecutive >= 3 || $adjacentPairsCount > 1) {
+                        // Jeśli dodanie kandydata tworzy 3 liczby pod rząd lub więcej niż dozwoloną liczbę par sąsiadów -> ODRZUĆ
+                        if ($maxConsecutive >= 3 || $adjacentPairsCount > $maxAdjacentPairs) {
                             continue;
                         }
 
@@ -555,7 +557,7 @@ class StatisticalOptimizerService
                 }
 
                 // 3. Ocena całkowita kuponu (Fitness Score)
-                $fitness = $this->calculateBetFitness($currentBet, $pairMatrix, $frequencies, $gaussParams, $maxNumber);
+                $fitness = $this->calculateBetFitness($currentBet, $pairMatrix, $frequencies, $gaussParams, $maxNumber, $withNeighbours);
 
                 if ($fitness['total_score'] > $bestCandidateFitness) {
                     $bestCandidateFitness = $fitness['total_score'];
@@ -597,7 +599,7 @@ class StatisticalOptimizerService
         // Sortuj zakłady według rankingu Fitness Score (malejąco)
         $betsWithFitness = [];
         foreach ($generatedBets as $bet) {
-            $fit = $this->calculateBetFitness($bet, $pairMatrix, $frequencies, $gaussParams, $maxNumber);
+            $fit = $this->calculateBetFitness($bet, $pairMatrix, $frequencies, $gaussParams, $maxNumber, $withNeighbours);
             $betsWithFitness[] = [
                 'bet' => $bet,
                 'fitness' => $fit,
@@ -633,7 +635,8 @@ class StatisticalOptimizerService
             $maxNumber,
             $finalUsageCounts,
             $finalPairUsageCounts,
-            $options['draws'] ?? []
+            $options['draws'] ?? [],
+            $withNeighbours
         );
         $report['ranked_bets'] = $betsWithFitness;
 
@@ -676,6 +679,8 @@ class StatisticalOptimizerService
         $gaussParams = $this->calculateGaussianParameters($maxNumber, $pick);
         $maxPerDecade = $this->maxPerDecade($pick, $maxNumber);
         $coverDecades = $options['cover_decades'] ?? false;
+        $withNeighbours = $options['with_neighbours'] ?? false;
+        $maxAdjacentPairs = $withNeighbours ? 2 : 1;
         $poolDecades = array_values(array_unique(array_map(fn($n) => (int)floor(($n - 1) / 10), $pool)));
 
         // Liczba zakładów bazowych potrzebna do jednokrotnego pokrycia całej puli
@@ -795,7 +800,7 @@ class StatisticalOptimizerService
 
             $partFitness = 0.0;
             foreach ($currentPartition as $pb) {
-                $f = $this->calculateBetFitness($pb, $pairMatrix, $frequencies, $gaussParams, $maxNumber);
+                $f = $this->calculateBetFitness($pb, $pairMatrix, $frequencies, $gaussParams, $maxNumber, $withNeighbours);
                 $partFitness += $f['total_score'];
             }
 
@@ -870,7 +875,7 @@ class StatisticalOptimizerService
                                 $curC = 1;
                             }
                         }
-                        if ($maxC >= 3 || $adj > 1) continue;
+                        if ($maxC >= 3 || $adj > $maxAdjacentPairs) continue;
 
                         $candDecade = (int)floor(($candidate - 1) / 10);
                         $decC = 0;
@@ -955,7 +960,7 @@ class StatisticalOptimizerService
                 }
                 if ($dup) continue;
 
-                $fit = $this->calculateBetFitness($currentBet, $pairMatrix, $frequencies, $gaussParams, $maxNumber);
+                $fit = $this->calculateBetFitness($currentBet, $pairMatrix, $frequencies, $gaussParams, $maxNumber, $withNeighbours);
 
                 // Ile razy pary tego kuponu są już obsadzone w dotychczasowym zestawie.
                 $repeatedPairLoad = 0;
@@ -1000,7 +1005,7 @@ class StatisticalOptimizerService
         // FAZA 3: Ranking i sortowanie zakładów według Fitness Score
         $betsWithFitness = [];
         foreach ($generatedBets as $bet) {
-            $fit = $this->calculateBetFitness($bet, $pairMatrix, $frequencies, $gaussParams, $maxNumber);
+            $fit = $this->calculateBetFitness($bet, $pairMatrix, $frequencies, $gaussParams, $maxNumber, $withNeighbours);
             $betsWithFitness[] = [
                 'bet' => $bet,
                 'fitness' => $fit,
@@ -1039,7 +1044,8 @@ class StatisticalOptimizerService
             $maxNumber,
             $finalUsageCounts,
             $finalPairUsageCounts,
-            $options['draws'] ?? []
+            $options['draws'] ?? [],
+            $withNeighbours
         );
 
         $usedUniqueCount = count(array_filter($finalUsageCounts, fn($cnt) => $cnt > 0));
@@ -1112,7 +1118,8 @@ class StatisticalOptimizerService
         array $pairMatrix,
         array $frequencies,
         array $gaussParams,
-        int $maxNumber
+        int $maxNumber,
+        bool $withNeighbours = false
     ): array {
         $pick = count($bet);
         $sum = array_sum($bet);
@@ -1134,10 +1141,11 @@ class StatisticalOptimizerService
         }
 
         // Kary za nierealistyczne ciągi liczb
+        $maxAdjacentPairs = $withNeighbours ? 2 : 1;
         $consecutivePenalty = 0;
         if ($maxConsecutive >= 3) {
             $consecutivePenalty = ($maxConsecutive >= 4) ? -500 : -200;
-        } elseif ($adjacentPairs > 1) {
+        } elseif ($adjacentPairs > $maxAdjacentPairs) {
             $consecutivePenalty = -100;
         }
 
@@ -1213,7 +1221,8 @@ class StatisticalOptimizerService
         array $frequencies,
         int $maxNumber,
         int $simulations = 50,
-        array $draws = []
+        array $draws = [],
+        bool $withNeighbours = false
     ): array {
         $gaussParams = $this->calculateGaussianParameters($maxNumber, $pick);
         // Zachowaj informację o źródle macierzy — benchmark nie może jej nadpisać.
@@ -1231,7 +1240,7 @@ class StatisticalOptimizerService
         $optParityHits = 0;
 
         foreach ($optimizedBets as $bet) {
-            $fit = $this->calculateBetFitness($bet, $pairMatrix, $frequencies, $gaussParams, $maxNumber);
+            $fit = $this->calculateBetFitness($bet, $pairMatrix, $frequencies, $gaussParams, $maxNumber, $withNeighbours);
             $optScores[] = $fit['total_score'];
             if ($fit['is_gaussian_optimal']) {
                 $optGaussHits++;
@@ -1257,7 +1266,7 @@ class StatisticalOptimizerService
                 $randBet = array_slice($rPool, 0, $pick);
                 sort($randBet);
 
-                $rFit = $this->calculateBetFitness($randBet, $pairMatrix, $frequencies, $gaussParams, $maxNumber);
+                $rFit = $this->calculateBetFitness($randBet, $pairMatrix, $frequencies, $gaussParams, $maxNumber, $withNeighbours);
                 $randScoresTotal += $rFit['total_score'];
                 if ($rFit['is_gaussian_optimal']) {
                     $randGaussTotalHits++;
@@ -1378,14 +1387,15 @@ class StatisticalOptimizerService
         int $maxNumber,
         array $usageCounts,
         array $pairUsageCounts,
-        array $draws = []
+        array $draws = [],
+        bool $withNeighbours = false
     ): array {
         $pick = count($bets[0] ?? []);
         $numBets = count($bets);
 
         $dilutionMetrics = $this->calculateDilutionMetrics($pool, $pick, $numBets, $maxNumber);
         $gaussianHistogram = $this->generateAsciiGaussianHistogram($bets, $gaussParams, $maxNumber);
-        $benchmark = $this->benchmarkAgainstRandom($pool, $pick, $bets, $frequencies, $maxNumber, 50, $draws);
+        $benchmark = $this->benchmarkAgainstRandom($pool, $pick, $bets, $frequencies, $maxNumber, 50, $draws, $withNeighbours);
 
         // Top 10 par o najwyższym Affinity w wygenerowanych kuponach
         $topPairs = [];

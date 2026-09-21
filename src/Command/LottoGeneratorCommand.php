@@ -75,6 +75,7 @@ class LottoGeneratorCommand extends Command
         $this->addOption('weight', null, InputOption::VALUE_REQUIRED, 'Tryb 3: waga liczb gorących (2-10)');
         $this->addOption('with-neighbours', 'wn', InputOption::VALUE_NONE, 'W trybie Decades lub AI: uwzględniaj sąsiadów (±1) ostatnich losowań');
         $this->addOption('neighbours', null, InputOption::VALUE_NONE, 'Alias dla --with-neighbours');
+        $this->addOption('neighbours-ratio', 'nr', InputOption::VALUE_REQUIRED, 'Docelowy procentowy udział sąsiadów w puli (np. 60, 60%, 0.6 - domyślnie: 60%)', '60%');
     }
 
     /**
@@ -98,6 +99,23 @@ class LottoGeneratorCommand extends Command
         preg_match_all('/\d+/', (string) $raw, $m);
 
         return array_values(array_unique(array_map('intval', $m[0] ?? [])));
+    }
+
+    private function parseRatio(?string $raw, float $default = 0.6): float
+    {
+        if ($raw === null || trim($raw) === '') {
+            return $default;
+        }
+        $clean = trim(str_replace('%', '', $raw));
+        if (!is_numeric($clean)) {
+            return $default;
+        }
+        $val = (float) $clean;
+        if ($val > 1.0) {
+            $val /= 100.0;
+        }
+
+        return max(0.1, min(0.9, $val));
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -170,6 +188,7 @@ class LottoGeneratorCommand extends Command
         }
 
         $withNeighbours = (bool) ($input->getOption('with-neighbours') || $input->getOption('neighbours'));
+        $neighboursRatio = $this->parseRatio((string) $input->getOption('neighbours-ratio'));
         $fullPool = [];
 
         if ($poolMode === 'AI') {
@@ -259,11 +278,17 @@ class LottoGeneratorCommand extends Command
                 $frequencies,
                 $decadeStrategy,
                 $latestDraw,
-                $withNeighbours
+                $withNeighbours,
+                $neighboursRatio
             );
             $fullPool = $decadeResult['pool'];
 
-            $io->section(sprintf('Rozkład dekadowy puli (%d liczb z %d)%s:', count($fullPool), $maxNum, $withNeighbours ? ' [z sąsiadami ±1]' : ''));
+            $io->section(sprintf(
+                'Rozkład dekadowy puli (%d liczb z %d)%s:',
+                count($fullPool),
+                $maxNum,
+                $withNeighbours ? sprintf(' [z sąsiadami ±1, limit: %d%%]', (int) round($neighboursRatio * 100)) : ''
+            ));
             if ($withNeighbours && !empty($decadeResult['anchors_used'])) {
                 $io->text(sprintf(' Kotwice wygranych (baza sąsiadów): [%s]', implode(', ', $decadeResult['anchors_used'])));
             }
@@ -379,6 +404,8 @@ class LottoGeneratorCommand extends Command
             ),
             weight: (int) ($mode === '3' ? $this->optionOrAsk($input, $io, 'weight', 'Waga (2-10):', '5') : 5),
             coverDecades: $coverDecades || $poolMode === 'Decades',
+            withNeighbours: $withNeighbours,
+            neighboursRatio: $neighboursRatio,
         );
 
         $io->text('Generowanie pakietu (tryb ' . $mode . ')...');

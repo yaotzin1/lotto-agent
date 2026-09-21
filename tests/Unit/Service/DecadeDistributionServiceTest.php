@@ -280,4 +280,36 @@ class DecadeDistributionServiceTest extends TestCase
         $dec1Selected = $result['breakdown'][1]['selected'];
         $this->assertSame([11, 12, 13], $dec1Selected);
     }
+
+    public function testGenerateDecadePoolWithNeighboursRatioCapping(): void
+    {
+        // Anchors: [5, 15, 25, 35, 45] -> 10 sąsiadów: 4, 6, 14, 16, 24, 26, 34, 36, 44, 46
+        $anchors = [5, 15, 25, 35, 45];
+        $frequencies = [];
+        for ($i = 1; $i <= 49; $i++) {
+            $frequencies[$i] = 10;
+        }
+        // Dajmy wyższą frekwencję trzem konkretnym sąsiadom: 4, 14, 24
+        $frequencies[4] = 90;
+        $frequencies[14] = 85;
+        $frequencies[24] = 80;
+
+        // Pula 15 liczb z ratio 20% (0.2) => target 3 sąsiadów
+        $result = $this->service->generateDecadePool(
+            maxNumber: 49,
+            poolSize: 15,
+            frequencies: $frequencies,
+            strategy: 'hot',
+            anchors: $anchors,
+            withNeighbours: true,
+            neighboursRatio: 0.2
+        );
+
+        $this->assertSame(0.2, $result['neighbours_ratio']);
+        $this->assertSame(3, $result['target_neighbours']);
+        $this->assertSame(3, $result['neighbours_count']);
+        $this->assertContains(4, $result['pool']);
+        $this->assertContains(14, $result['pool']);
+        $this->assertContains(24, $result['pool']);
+    }
 }

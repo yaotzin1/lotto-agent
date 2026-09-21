@@ -177,6 +177,28 @@ class DecadeDistributionService
      *     with_neighbours: bool,
      *     neighbours_count: int,
      *     anchors_used: list<int>
+     * @param float $neighboursRatio Docelowy udział sąsiadów w puli (0.1 - 0.9, domyślnie 0.6)
+     * @return array{
+     *     pool: list<int>,
+     *     quotas: array<int, int>,
+     *     breakdown: array<int, array{
+     *         index: int,
+     *         label: string,
+     *         start: int,
+     *         end: int,
+     *         capacity: int,
+     *         quota: int,
+     *         selected: list<int>,
+     *         neighbours_selected: list<int>
+     *     }>,
+     *     is_all_decades_covered: bool,
+     *     decades_count: int,
+     *     decades_covered: int,
+     *     with_neighbours: bool,
+     *     neighbours_ratio: float,
+     *     target_neighbours: int,
+     *     neighbours_count: int,
+     *     anchors_used: list<int>
      * }
      */
     public function generateDecadePool(
@@ -185,7 +207,8 @@ class DecadeDistributionService
         array $frequencies = [],
         string $strategy = 'hot',
         array $anchors = [],
-        bool $withNeighbours = false
+        bool $withNeighbours = false,
+        float $neighboursRatio = 0.6
     ): array {
         $decades = $this->getDecadesForGame($maxNumber);
         $quotas = $this->calculateDecadeQuotas($poolSize, $maxNumber, $frequencies);
@@ -193,6 +216,7 @@ class DecadeDistributionService
         // Wyznacz sąsiadów ±1 kotwic, jeśli włączono opcję withNeighbours
         $anchorsUsed = [];
         $neighbourNumbers = [];
+        $targetNeighbours = 0;
         if ($withNeighbours) {
             $validAnchors = array_values(array_filter(
                 $anchors,
@@ -216,6 +240,22 @@ class DecadeDistributionService
                 }
             }
             $neighbourNumbers = array_values(array_unique($neighbourNumbers));
+
+            // Ogranicz do docelowej liczby sąsiadów wg neighboursRatio
+            $targetNeighbours = max(1, (int) round($poolSize * max(0.1, min(0.9, $neighboursRatio))));
+            if (count($neighbourNumbers) > $targetNeighbours) {
+                if (!empty($frequencies)) {
+                    usort($neighbourNumbers, static function (int $a, int $b) use ($frequencies): int {
+                        $fA = $frequencies[$a] ?? 0;
+                        $fB = $frequencies[$b] ?? 0;
+                        if ($fA !== $fB) {
+                            return $fB <=> $fA;
+                        }
+                        return $a <=> $b;
+                    });
+                }
+                $neighbourNumbers = array_slice($neighbourNumbers, 0, $targetNeighbours);
+            }
         }
 
         $selectedPool = [];
@@ -293,6 +333,8 @@ class DecadeDistributionService
             'decades_count' => $totalDecades,
             'decades_covered' => $coveredCount,
             'with_neighbours' => $withNeighbours,
+            'neighbours_ratio' => $neighboursRatio,
+            'target_neighbours' => $targetNeighbours,
             'neighbours_count' => count(array_intersect($selectedPool, $neighbourNumbers)),
             'anchors_used' => $anchorsUsed,
         ];
