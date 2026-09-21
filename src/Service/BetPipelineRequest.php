@@ -42,6 +42,7 @@ final class BetPipelineRequest
         public readonly bool $coverDecades = false,
         public readonly bool $withNeighbours = false,
         public readonly float $neighboursRatio = 0.6,
+        public readonly array $latestDraw = [],
     ) {
     }
 

@@ -1063,6 +1063,679 @@ class StatisticalOptimizerService
     }
 
     /**
+     * Tryb 9: Kaskadowy System Warstwowy Sąsiadów (Tiered Neighbour Cascade).
+     *
+     * Dzieli pełną pulę na 3 warstwy:
+     * - Tier 1 (Pula Silna): Kotwice z ostatniego losowania + bezpośredni sąsiedzi (±1)
+     * - Tier 2 (Pula Średnia / Bufor): Rozszerzeni sąsiedzi (±2) + liczby o wysokiej synergii/częstotliwości
+     * - Tier 3 (Pula Dopełnienia): Pozostałe liczby (zapewniające 100% pokrycia puli - Zero-Drop)
+     *
+     * Następnie kaskadowo generuje zakłady z zachowaniem gwarancji Zero-Drop
+     * i sortuje je ściśle malejąco według Fitness Score (od najsilniejszych do najsłabszych).
+     *
+     * @param array<int> $pool Pula liczb wejściowych (np. 1..49)
+     * @param int $pick Liczba skreśleń (np. 6 w Lotto, 5 w MiniLotto)
+     * @param int $numBets Docelowa liczba zakładów
+     * @param array<int, int> $frequencies Częstotliwości wystąpień
+     * @param int $maxNumber Maksymalny numer w grze
+     * @param array<int> $latestDraw Liczby z ostatniego losowania (kotwice)
+     * @param array<string, mixed> $options Opcjonalne parametry
+     * @return array{bets: array<array<int>>, report: array, tiers: array}
+     */
+    public function optimizeTieredNeighbourBets(
+        array $pool,
+        int $pick,
+        int $numBets,
+        array $frequencies,
+        int $maxNumber,
+        array $latestDraw = [],
+        array $options = []
+    ): array {
+        $pool = array_values(array_unique(array_map('intval', $pool)));
+        sort($pool);
+        $poolSize = count($pool);
+
+        if ($poolSize < $pick) {
+            throw new \InvalidArgumentException("Pula ($poolSize) jest mniejsza niż wymagana ilość do skreślenia ($pick).");
+        }
+
+        $this->assertBetCountIsAchievable($poolSize, $pick, $numBets);
+
+        $pairMatrix = $this->buildPairAffinityMatrix($pool, $frequencies, $options['draws'] ?? []);
+        $gaussParams = $this->calculateGaussianParameters($maxNumber, $pick);
+        $maxPerDecade = $this->maxPerDecade($pick, $maxNumber);
+
+        // 1. Wyznaczenie kotwic (Anchors)
+        $latestDraw = array_values(array_unique(array_map('intval', $latestDraw)));
+        $anchors = array_values(array_intersect($latestDraw, $pool));
+        if (empty($anchors)) {
+            $sortedByFreq = $pool;
+            usort($sortedByFreq, fn($a, $b) => ($frequencies[$b] ?? 0) <=> ($frequencies[$a] ?? 0));
+            $anchors = array_slice($sortedByFreq, 0, min($pick, count($sortedByFreq)));
+        }
+
+        // 2. Bezpośredni sąsiedzi ±1 (Direct Neighbours)
+        $directNeighbours = [];
+        foreach ($anchors as $a) {
+            $left = $a - 1;
+            $right = $a + 1;
+            if ($left >= 1 && in_array($left, $pool, true) && !in_array($left, $anchors, true)) {
+                $directNeighbours[] = $left;
+            }
+            if ($right <= $maxNumber && in_array($right, $pool, true) && !in_array($right, $anchors, true)) {
+                $directNeighbours[] = $right;
+            }
+        }
+        $directNeighbours = array_values(array_unique($directNeighbours));
+        sort($directNeighbours);
+
+        // Tier 1: Kotwice + Bezpośredni sąsiedzi ±1
+        $tier1 = array_values(array_unique(array_merge($anchors, $directNeighbours)));
+        sort($tier1);
+
+        // 3. Tier 2: Sąsiedzi ±2 oraz uzupełnienie z bufora o najwyższej synergii
+        $extendedNeighbours = [];
+        foreach ($anchors as $a) {
+            $left2 = $a - 2;
+            $right2 = $a + 2;
+            if ($left2 >= 1 && in_array($left2, $pool, true) && !in_array($left2, $tier1, true)) {
+                $extendedNeighbours[] = $left2;
+            }
+            if ($right2 <= $maxNumber && in_array($right2, $pool, true) && !in_array($right2, $tier1, true)) {
+                $extendedNeighbours[] = $right2;
+            }
+        }
+        $extendedNeighbours = array_values(array_unique($extendedNeighbours));
+
+        $remainingPool = array_values(array_diff($pool, $tier1));
+        $remainingScored = [];
+        foreach ($remainingPool as $n) {
+            $affWithT1 = 0;
+            foreach ($tier1 as $t1) {
+                $affWithT1 += ($pairMatrix[$n][$t1] ?? 0);
+            }
+            $score = ($affWithT1 * 1.5) + (($frequencies[$n] ?? 1) * 2.0);
+            if (in_array($n, $extendedNeighbours, true)) {
+                $score += 30.0;
+            }
+            $remainingScored[$n] = $score;
+        }
+        arsort($remainingScored);
+
+        $targetTier2Size = max($pick, (int) round(count($remainingPool) / 2));
+        $tier2 = array_slice(array_keys($remainingScored), 0, $targetTier2Size);
+        sort($tier2);
+
+        // 4. Tier 3: Pozostałe liczby (Domknięcie Zero-Drop)
+        $tier3 = array_values(array_diff($pool, $tier1, $tier2));
+        sort($tier3);
+
+        $baseBetsNeeded = (int) ceil($poolSize / $pick);
+        $baseBetsCount = ($numBets >= $baseBetsNeeded) ? $baseBetsNeeded : 0;
+
+        // FAZA 1: Budowa szkieletu Zero-Drop (uruchamiana tylko gdy budżet pozwala na pełne pokrycie bębna)
+        // Każda liczba z puli musi pojawić się przynajmniej raz.
+        // Kupony w szkielecie są układane kaskadowo: najpierw kupony bogate w T1, potem T2, potem T3.
+        $bestPartitionBets = [];
+        $bestPartitionFitness = -PHP_FLOAT_MAX;
+
+        if ($baseBetsCount > 0) {
+            $partitionAttempts = 150;
+            for ($p = 0; $p < $partitionAttempts; $p++) {
+                $currentPartition = [];
+
+                $shuffledT1 = $tier1;
+                shuffle($shuffledT1);
+                $shuffledT2 = $tier2;
+                shuffle($shuffledT2);
+                $shuffledT3 = $tier3;
+                shuffle($shuffledT3);
+
+                // Gwarantujemy, że każdy kupon bazowy dostaje ziarno z Tier 1
+                $seedT1PerBet = [];
+                for ($b = 0; $b < $baseBetsCount; $b++) {
+                    if (!empty($shuffledT1)) {
+                        $seedT1PerBet[$b] = [array_shift($shuffledT1)];
+                    } else {
+                        $seedT1PerBet[$b] = [$tier1[array_rand($tier1)]];
+                    }
+                }
+
+                $orderedUnassigned = array_merge($shuffledT1, $shuffledT2, $shuffledT3);
+
+                for ($b = 0; $b < $baseBetsCount; $b++) {
+                    $currentBet = $seedT1PerBet[$b];
+
+                    $remainingOrdered = [];
+                    foreach ($orderedUnassigned as $cand) {
+                        if (in_array($cand, $currentBet, true)) {
+                            continue;
+                        }
+                        if (count($currentBet) >= $pick) {
+                            $remainingOrdered[] = $cand;
+                            continue;
+                        }
+
+                        // Sprawdź ciągi i pary przyległe
+                        $tempNums = array_merge($currentBet, [$cand]);
+                        sort($tempNums);
+
+                        $maxConsecutive = 1;
+                        $curConsecutive = 1;
+                        $adjacentPairs = 0;
+                        for ($k = 0; $k < count($tempNums) - 1; $k++) {
+                            if ($tempNums[$k + 1] === $tempNums[$k] + 1) {
+                                $curConsecutive++;
+                                $adjacentPairs++;
+                                if ($curConsecutive > $maxConsecutive) {
+                                    $maxConsecutive = $curConsecutive;
+                                }
+                            } else {
+                                $curConsecutive = 1;
+                            }
+                        }
+
+                        if ($maxConsecutive >= 3 || $adjacentPairs > 2) {
+                            $remainingOrdered[] = $cand;
+                            continue;
+                        }
+
+                        // Sprawdź dekadę
+                        $candDecade = (int) floor(($cand - 1) / 10);
+                        $decCount = 0;
+                        foreach ($currentBet as $cb) {
+                            if ((int) floor(($cb - 1) / 10) === $candDecade) {
+                                $decCount++;
+                            }
+                        }
+                        if ($decCount >= $maxPerDecade) {
+                            $remainingOrdered[] = $cand;
+                            continue;
+                        }
+
+                        $currentBet[] = $cand;
+                    }
+                    $orderedUnassigned = $remainingOrdered;
+
+                    if (count($currentBet) < $pick && !empty($orderedUnassigned)) {
+                        while (count($currentBet) < $pick && !empty($orderedUnassigned)) {
+                            $c = array_shift($orderedUnassigned);
+                            if (!in_array($c, $currentBet, true)) {
+                                $currentBet[] = $c;
+                            }
+                        }
+                    }
+
+                    if (count($currentBet) < $pick) {
+                        $availSpare = array_values(array_diff($pool, $currentBet));
+                        usort($availSpare, function ($a, $b) use ($pairMatrix, $currentBet, $frequencies, $tier1, $tier2) {
+                            $scoreA = (in_array($a, $tier1, true) ? 50 : (in_array($a, $tier2, true) ? 20 : 0));
+                            $scoreB = (in_array($b, $tier1, true) ? 50 : (in_array($b, $tier2, true) ? 20 : 0));
+                            foreach ($currentBet as $cb) {
+                                $scoreA += ($pairMatrix[$a][$cb] ?? 0);
+                                $scoreB += ($pairMatrix[$b][$cb] ?? 0);
+                            }
+                            $scoreA += ($frequencies[$a] ?? 1);
+                            $scoreB += ($frequencies[$b] ?? 1);
+                            return $scoreB <=> $scoreA;
+                        });
+
+                        while (count($currentBet) < $pick && !empty($availSpare)) {
+                            $currentBet[] = array_shift($availSpare);
+                        }
+                    }
+
+                    sort($currentBet);
+                    $currentPartition[] = $currentBet;
+                }
+
+                $partFitness = 0.0;
+                foreach ($currentPartition as $pb) {
+                    $f = $this->calculateTieredBetFitness(
+                        $pb,
+                        $pairMatrix,
+                        $frequencies,
+                        $gaussParams,
+                        $maxNumber,
+                        $tier1,
+                        $tier2,
+                        $tier3,
+                        $anchors,
+                        $directNeighbours
+                    );
+                    $partFitness += $f['total_score'];
+                }
+
+                if ($partFitness > $bestPartitionFitness) {
+                    $bestPartitionFitness = $partFitness;
+                    $bestPartitionBets = $currentPartition;
+                }
+            }
+        }
+
+        $generatedBets = $bestPartitionBets;
+
+        // Liczniki użycia
+        $usageCounts = array_fill_keys($pool, 0);
+        $pairUsageCounts = [];
+        foreach ($pool as $n1) {
+            foreach ($pool as $n2) {
+                $pairUsageCounts[$n1][$n2] = 0;
+            }
+        }
+        foreach ($generatedBets as $b) {
+            foreach ($b as $i => $n1) {
+                $usageCounts[$n1]++;
+                foreach ($b as $j => $n2) {
+                    if ($i !== $j) $pairUsageCounts[$n1][$n2]++;
+                }
+            }
+        }
+
+        // FAZA 2: Dopełnienie do żądanej liczby zakładów (jeśli numBets > baseBetsCount)
+        $existingKeys = [];
+        foreach ($generatedBets as $b) {
+            $existingKeys[implode('-', $b)] = true;
+        }
+
+        while (count($generatedBets) < $numBets) {
+            $bestCandidateBet = null;
+            $bestCandidateFitness = -PHP_FLOAT_MAX;
+
+            for ($attempt = 0; $attempt < 300; $attempt++) {
+                $currentBet = [];
+
+                // 1. Seed z Tier 1
+                $seedPool = $tier1;
+                usort($seedPool, fn($a, $b) => ($usageCounts[$a] <=> $usageCounts[$b]));
+                $topSeeds = array_slice($seedPool, 0, max(3, (int) ceil(count($seedPool) * 0.4)));
+                $currentBet[] = $topSeeds[array_rand($topSeeds)];
+
+                $targetT1 = max(1, min(count($tier1), (int) round($pick * 0.6)));
+                $targetT2 = max(1, min(count($tier2), (int) round($pick * 0.3)));
+
+                while (count($currentBet) < $pick) {
+                    $t1InBet = count(array_intersect($currentBet, $tier1));
+                    $t2InBet = count(array_intersect($currentBet, $tier2));
+
+                    $bestCand = null;
+                    $bestScore = -PHP_FLOAT_MAX;
+
+                    $candidates = array_diff($pool, $currentBet);
+                    foreach ($candidates as $cand) {
+                        $tempNums = array_merge($currentBet, [$cand]);
+                        sort($tempNums);
+
+                        $maxConsecutive = 1;
+                        $curConsecutive = 1;
+                        $adjacentPairs = 0;
+                        for ($k = 0; $k < count($tempNums) - 1; $k++) {
+                            if ($tempNums[$k + 1] === $tempNums[$k] + 1) {
+                                $curConsecutive++;
+                                $adjacentPairs++;
+                                if ($curConsecutive > $maxConsecutive) {
+                                    $maxConsecutive = $curConsecutive;
+                                }
+                            } else {
+                                $curConsecutive = 1;
+                            }
+                        }
+                        if ($maxConsecutive >= 3 || $adjacentPairs > 2) {
+                            continue;
+                        }
+
+                        $candDecade = (int) floor(($cand - 1) / 10);
+                        $decCount = 0;
+                        foreach ($currentBet as $cb) {
+                            if ((int) floor(($cb - 1) / 10) === $candDecade) {
+                                $decCount++;
+                            }
+                        }
+                        if ($decCount >= $maxPerDecade) {
+                            continue;
+                        }
+
+                        $isT1 = in_array($cand, $tier1, true);
+                        $isT2 = in_array($cand, $tier2, true);
+                        $isAnchor = in_array($cand, $anchors, true);
+                        $isNeighbour = in_array($cand, $directNeighbours, true);
+
+                        $tierWeight = 0.0;
+                        if ($isT1 && $t1InBet < $targetT1) {
+                            $tierWeight = 50.0;
+                        } elseif ($isT2 && $t2InBet < $targetT2) {
+                            $tierWeight = 25.0;
+                        } elseif ($isT1) {
+                            $tierWeight = 20.0;
+                        } elseif ($isT2) {
+                            $tierWeight = 10.0;
+                        } else {
+                            $tierWeight = -10.0;
+                        }
+
+                        if ($isAnchor) $tierWeight += 15.0;
+                        if ($isNeighbour) $tierWeight += 20.0;
+
+                        $aff = 0;
+                        $pairPenalty = 0.0;
+                        foreach ($currentBet as $cb) {
+                            $aff += ($pairMatrix[$cand][$cb] ?? 0);
+                            $pairPenalty += ($pairUsageCounts[$cand][$cb] ?? 0) * 15.0;
+                        }
+
+                        $usagePenalty = ($usageCounts[$cand] ?? 0) * 10.0;
+                        $freq = $frequencies[$cand] ?? 1;
+
+                        $candScore = ($aff * 1.2) + ($freq * 1.5) + $tierWeight - $usagePenalty - $pairPenalty;
+
+                        if ($candScore > $bestScore) {
+                            $bestScore = $candScore;
+                            $bestCand = $cand;
+                        }
+                    }
+
+                    if ($bestCand !== null) {
+                        $currentBet[] = $bestCand;
+                    } else {
+                        $free = array_values(array_diff($pool, $currentBet));
+                        if (!empty($free)) {
+                            $currentBet[] = $free[array_rand($free)];
+                        } else {
+                            break;
+                        }
+                    }
+                }
+
+                sort($currentBet);
+                $key = implode('-', $currentBet);
+
+                if (count($currentBet) === $pick && !isset($existingKeys[$key])) {
+                    $candFit = $this->calculateTieredBetFitness(
+                        $currentBet,
+                        $pairMatrix,
+                        $frequencies,
+                        $gaussParams,
+                        $maxNumber,
+                        $tier1,
+                        $tier2,
+                        $tier3,
+                        $anchors,
+                        $directNeighbours
+                    );
+
+                    $score = $candFit['total_score'];
+                    if ($score > $bestCandidateFitness) {
+                        $bestCandidateFitness = $score;
+                        $bestCandidateBet = $currentBet;
+                    }
+                }
+            }
+
+            if ($bestCandidateBet === null) {
+                $bestCandidateBet = $this->findUnusedCombination($pool, $pick, $generatedBets);
+            }
+
+            if ($bestCandidateBet === null) {
+                $this->logger->warning('Przerwano dopełnianie: brak dalszych unikalnych kombinacji.', [
+                    'generated' => count($generatedBets),
+                    'requested' => $numBets,
+                ]);
+                break;
+            }
+
+            $key = implode('-', $bestCandidateBet);
+            $existingKeys[$key] = true;
+            $generatedBets[] = $bestCandidateBet;
+
+            foreach ($bestCandidateBet as $i => $n1) {
+                $usageCounts[$n1]++;
+                foreach ($bestCandidateBet as $j => $n2) {
+                    if ($i !== $j) $pairUsageCounts[$n1][$n2]++;
+                }
+            }
+        }
+
+        // FAZA 3: Ranking i sortowanie zakładów według Fitness Score (OD NAJSILNIEJSZYCH DO NAJSŁABSZYCH)
+        $betsWithFitness = [];
+        foreach ($generatedBets as $bet) {
+            $fit = $this->calculateTieredBetFitness(
+                $bet,
+                $pairMatrix,
+                $frequencies,
+                $gaussParams,
+                $maxNumber,
+                $tier1,
+                $tier2,
+                $tier3,
+                $anchors,
+                $directNeighbours
+            );
+            $betsWithFitness[] = [
+                'bet' => $bet,
+                'fitness' => $fit,
+            ];
+        }
+
+        usort($betsWithFitness, function ($a, $b) {
+            return $b['fitness']['total_score'] <=> $a['fitness']['total_score'];
+        });
+
+        $finalSortedBets = array_map(fn($item) => $item['bet'], $betsWithFitness);
+
+        $finalUsageCounts = array_fill_keys($pool, 0);
+        $finalPairUsageCounts = [];
+        foreach ($pool as $n1) {
+            foreach ($pool as $n2) {
+                $finalPairUsageCounts[$n1][$n2] = 0;
+            }
+        }
+        foreach ($finalSortedBets as $b) {
+            foreach ($b as $i => $n1) {
+                $finalUsageCounts[$n1]++;
+                foreach ($b as $j => $n2) {
+                    if ($i !== $j) $finalPairUsageCounts[$n1][$n2]++;
+                }
+            }
+        }
+
+        $report = $this->generateStatisticalReport(
+            $pool,
+            $finalSortedBets,
+            $pairMatrix,
+            $frequencies,
+            $gaussParams,
+            $maxNumber,
+            $finalUsageCounts,
+            $finalPairUsageCounts,
+            $options['draws'] ?? [],
+            true
+        );
+
+        $usedUniqueCount = count(array_filter($finalUsageCounts, fn($cnt) => $cnt > 0));
+        $report['mode'] = '9';
+        $report['unique_numbers_used'] = $usedUniqueCount;
+        $report['pool_size'] = $poolSize;
+        $report['pool_coverage_pct'] = round(($usedUniqueCount / $poolSize) * 100, 1);
+        $report['is_full_coverage_guaranteed'] = ($usedUniqueCount === $poolSize);
+        $report['base_bets_needed'] = $baseBetsNeeded;
+        $report['ranked_bets'] = $betsWithFitness;
+
+        $t1Total = 0;
+        $t2Total = 0;
+        $t3Total = 0;
+        foreach ($betsWithFitness as $item) {
+            $t1Total += $item['fitness']['tier1_count'];
+            $t2Total += $item['fitness']['tier2_count'];
+            $t3Total += $item['fitness']['tier3_count'];
+        }
+        $betCount = max(1, count($betsWithFitness));
+        $report['tiers'] = [
+            'tier1' => $tier1,
+            'tier2' => $tier2,
+            'tier3' => $tier3,
+            'anchors' => $anchors,
+            'neighbours' => $directNeighbours,
+            'avg_tier1' => round($t1Total / $betCount, 1),
+            'avg_tier2' => round($t2Total / $betCount, 1),
+            'avg_tier3' => round($t3Total / $betCount, 1),
+        ];
+
+        return [
+            'bets' => $finalSortedBets,
+            'report' => $report,
+            'tiers' => $report['tiers'],
+        ];
+    }
+
+    /**
+     * Ocenia jakość pojedynczego zakładu w kaskadzie sąsiadów (Tryb 9).
+     *
+     * @param array<int> $bet
+     * @param array<int, array<int, float|int>> $pairMatrix
+     * @param array<int, int> $frequencies
+     * @param array<string, mixed> $gaussParams
+     * @param int $maxNumber
+     * @param array<int> $tier1
+     * @param array<int> $tier2
+     * @param array<int> $tier3
+     * @param array<int> $anchors
+     * @param array<int> $directNeighbours
+     * @return array<string, mixed>
+     */
+    public function calculateTieredBetFitness(
+        array $bet,
+        array $pairMatrix,
+        array $frequencies,
+        array $gaussParams,
+        int $maxNumber,
+        array $tier1,
+        array $tier2,
+        array $tier3,
+        array $anchors,
+        array $directNeighbours
+    ): array {
+        $pick = count($bet);
+        $sum = array_sum($bet);
+
+        // 1. Ciągi kolejnych liczb i pary sąsiadujące
+        $maxConsecutive = 1;
+        $curConsecutive = 1;
+        $adjacentPairs = 0;
+        for ($i = 0; $i < $pick - 1; $i++) {
+            if ($bet[$i + 1] === $bet[$i] + 1) {
+                $curConsecutive++;
+                $adjacentPairs++;
+                if ($curConsecutive > $maxConsecutive) {
+                    $maxConsecutive = $curConsecutive;
+                }
+            } else {
+                $curConsecutive = 1;
+            }
+        }
+
+        $consecutivePenalty = 0;
+        if ($maxConsecutive >= 3) {
+            $consecutivePenalty = ($maxConsecutive >= 4) ? -500 : -250;
+        } elseif ($adjacentPairs > 2) {
+            $consecutivePenalty = -100;
+        }
+
+        // 2. Suma powiązań par
+        $pairAffinityTotal = 0;
+        $pairCount = 0;
+        for ($i = 0; $i < $pick; $i++) {
+            for ($j = $i + 1; $j < $pick; $j++) {
+                $pairAffinityTotal += ($pairMatrix[$bet[$i]][$bet[$j]] ?? 0);
+                $pairCount++;
+            }
+        }
+        $avgPairAffinity = $pairCount > 0 ? $pairAffinityTotal / $pairCount : 0;
+
+        // 3. Frekwencja liczb
+        $freqTotal = 0;
+        foreach ($bet as $num) {
+            $freqTotal += ($frequencies[$num] ?? 1);
+        }
+
+        // 4. Parzyste / Nieparzyste
+        $odds = count(array_filter($bet, fn($n) => $n % 2 !== 0));
+        $evens = $pick - $odds;
+        $isParityBalanced = $this->isParityBalanced($odds, $evens, $pick);
+        $parityBonus = $isParityBalanced ? 30 : -40;
+
+        // 5. Gauss
+        $isGaussianOptimal = ($sum >= $gaussParams['optimal_min'] && $sum <= $gaussParams['optimal_max']);
+        $diffFromExpected = abs($sum - $gaussParams['expected_sum']);
+        $gaussianBonus = $isGaussianOptimal ? 40 : max(-60, (int) round(40 - ($diffFromExpected * 2.0)));
+
+        // 6. Dekady
+        $decades = [];
+        foreach ($bet as $n) {
+            $decades[(int) floor(($n - 1) / 10)] = ($decades[(int) floor(($n - 1) / 10)] ?? 0) + 1;
+        }
+        $decadeSpread = count($decades);
+        $maxInSingleDecade = !empty($decades) ? max($decades) : 0;
+
+        $decadeBonus = 0;
+        if ($maxInSingleDecade > $this->maxPerDecade($pick, $maxNumber)) {
+            $decadeBonus = -150;
+        } elseif ($decadeSpread >= $this->targetDecadeSpread($pick, $maxNumber)) {
+            $decadeBonus = 30;
+            if ($decadeSpread >= min($this->targetDecadeSpread($pick, $maxNumber) + 1, (int) ceil($maxNumber / 10), $pick)) {
+                $decadeBonus += 20;
+            }
+        }
+
+        // 7. Punkty za warstwy i sąsiadów
+        $t1Count = count(array_intersect($bet, $tier1));
+        $t2Count = count(array_intersect($bet, $tier2));
+        $t3Count = count(array_intersect($bet, $tier3));
+        $anchorsCount = count(array_intersect($bet, $anchors));
+        $neighboursCount = count(array_intersect($bet, $directNeighbours));
+
+        $tierPoints = ($t1Count * 35.0)
+                    + ($t2Count * 15.0)
+                    + ($t3Count * 2.0)
+                    + ($anchorsCount * 20.0)
+                    + ($neighboursCount * 20.0);
+
+        $totalScore = $tierPoints
+                    + ($pairAffinityTotal * 1.0)
+                    + ($freqTotal * 1.5)
+                    + $parityBonus
+                    + $gaussianBonus
+                    + $decadeBonus
+                    + $consecutivePenalty;
+
+        $tierProfile = match (true) {
+            $t1Count >= 3 => 'ELITA SĄSIADÓW',
+            $t1Count === 2 => 'MOCNY BALANS',
+            $t1Count === 1 => 'PRZEJŚCIE TRENDU',
+            default => 'DOMKNIĘCIE BĘBNA',
+        };
+
+        return [
+            'total_score' => round($totalScore, 1),
+            'sum' => $sum,
+            'is_gaussian_optimal' => $isGaussianOptimal,
+            'is_parity_balanced' => $isParityBalanced,
+            'parity_ratio' => sprintf('%d:%d', $odds, $evens),
+            'decade_spread' => $decadeSpread,
+            'max_consecutive' => $maxConsecutive,
+            'pair_affinity_total' => $pairAffinityTotal,
+            'avg_pair_affinity' => round($avgPairAffinity, 2),
+            'freq_total' => $freqTotal,
+            'tier1_count' => $t1Count,
+            'tier2_count' => $t2Count,
+            'tier3_count' => $t3Count,
+            'anchors_count' => $anchorsCount,
+            'neighbours_count' => $neighboursCount,
+            'tier_summary' => sprintf('%dT1 · %dT2 · %dT3', $t1Count, $t2Count, $t3Count),
+            'tier_profile' => $tierProfile,
+        ];
+    }
+
+    /**
      * Czy podział parzyste/nieparzyste jest "naturalny" dla TEJ gry.
      *
      * Poprzedni warunek ($odds >= 2 && $evens >= 1 && $odds <= 4) był zapisany

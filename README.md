@@ -93,7 +93,17 @@ docker compose run --rm app php bin/console app:lotto-tui
 # Pula może być wygenerowana przez AI (Gemini), Stride (kroczenie co N losowań) lub Ręcznie.
 ```
 
-### 3. Stroboscopic / Stride Sampler (`app:lotto-stride`)
+### 3. Tiered Neighbour Cascade Generator (`app:lotto-generator --mode=9`)
+Dekompozycja pełnego bębna (np. 49 liczb w Lotto, 42 w Mini Lotto) na 3 pule siły (Tier 1: Kotwice + Sąsiedzi $\pm 1$, Tier 2: Bufor $\pm 2$ & Synergia, Tier 3: Zero-Drop) z rankingiem zakładów od najsilniejszego do najsłabszego:
+```bash
+# Lotto: 25 zakładów z całego bębna 49 liczb w kaskadzie sąsiadów:
+docker compose run --rm app php bin/console app:lotto-generator --game=Lotto --pool-mode=Manual --pool=all --mode=9 --bets=25
+
+# Z ręcznie zdefiniowaną bazą kotwic ostatniego losowania:
+docker compose run --rm app php bin/console app:lotto-generator --game=Lotto --pool-mode=Manual --pool=all --mode=9 --bets=25 --latest-draw="2,3,19,23,42,49"
+```
+
+### 4. Stroboscopic / Stride Sampler (`app:lotto-stride`)
 Generates bets using historical draws spaced by a fixed stride $N$ (e.g. 257 or 127) and their $\pm 1$ neighbours:
 ```bash
 # Stride 257, 12 numbers pool, 6 bets with Mode 8 Zero-Drop Full Coverage:
@@ -119,7 +129,7 @@ cached. `DrawArchiveService` keeps a per-game archive on disk, projects the API 
 Because a missing draw shifts *every* anchor by the same amount, the command reports how many draws
 the archive is behind the draw calendar and warns instead of silently sampling the wrong rows.
 
-### 4. Draw Archive Builder (`app:lotto-archive`)
+### 5. Draw Archive Builder (`app:lotto-archive`)
 The generator only tops up the last few dates so it never keeps you waiting. Building history hundreds
 of draws deep - which is what a stride of 127 or 257 actually needs - is this command's job:
 ```bash
@@ -154,7 +164,7 @@ requests pass in 66 s without a single HTTP 429, while 8 parallel ones are throt
 Fetching is therefore sequential, and a 429 means back off and retry that date rather than abandon the
 run. Every fetched date is cached, so an interrupted backfill simply resumes where it stopped.
 
-### 5. Historical Stride Backtester (`app:lotto-backtest`)
+### 6. Historical Stride Backtester (`app:lotto-backtest`)
 Empirical backtesting of stride sampling across the full archive of a chosen game:
 ```bash
 docker compose run --rm app php bin/console app:lotto-backtest --pool-size=12 --strides="1,2,7,30,50,127,257,500"

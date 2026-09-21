@@ -77,8 +77,8 @@ class LottoTuiCommand extends Command
         $this->addOption('l2-count', null, InputOption::VALUE_REQUIRED, 'Tryb 5: liczba podbloków L2');
         $this->addOption('block-size', null, InputOption::VALUE_REQUIRED, 'Tryb 2: rozmiar bloku');
         $this->addOption('block-count', null, InputOption::VALUE_REQUIRED, 'Tryb 2: liczba bloków');
-        $this->addOption('hot', null, InputOption::VALUE_REQUIRED, 'Tryb 3: liczby gorące o zwiększonej wadze');
-        $this->addOption('mode', 'm', InputOption::VALUE_REQUIRED, 'Tryb pracy generatora (1-8)');
+        $this->addOption('mode', 'm', InputOption::VALUE_REQUIRED, 'Tryb pracy generatora (1-9)');
+        $this->addOption('latest-draw', 'ld', InputOption::VALUE_REQUIRED, 'Liczby ostatniego losowania dla Trybu 9 (np. "2,3,19,23,42,49")');
         $this->addOption('neighbours', 'nb', InputOption::VALUE_NONE, 'Czy uwzględniać w analizie liczby sąsiadujące (+1/-1)?');
         $this->addOption('with-neighbours', 'wn', InputOption::VALUE_NONE, 'W trybie Decades lub AI: uwzględniaj sąsiadów (±1) ostatnich losowań');
         $this->addOption('neighbours-ratio', 'nr', InputOption::VALUE_REQUIRED, 'Docelowy procentowy udział sąsiadów w puli (np. 60, 60%, 0.6 - domyślnie: 60%)', '60%');
@@ -507,7 +507,7 @@ class LottoTuiCommand extends Command
         }
 
         $modeOpt = $input->getOption('mode');
-        if ($modeOpt && in_array((string)$modeOpt, ['1', '2', '3', '4', '5', '6', '7', '8'], true)) {
+        if ($modeOpt && in_array((string)$modeOpt, ['1', '2', '3', '4', '5', '6', '7', '8', '9'], true)) {
             $mode = (string)$modeOpt;
         } else {
             $io->section("METODA PRACY (Generator)");
@@ -520,13 +520,14 @@ class LottoTuiCommand extends Command
                 '6' => '[6] SYSTEM ROZDZIELNY (Bankierzy Rotacyjni)',
                 '7' => '[7] OPTYMALIZACJA STATYSTYCZNA (Synergia Par/Trójek - Tryb Hot)',
                 '8' => '[8] RANKINGOWE PEŁNE POKRYCIE (Synergia Par + Gwarancja 100% Puli)',
-            ], '8');
+                '9' => '[9] KASKADOWY SYSTEM SĄSIADÓW (Warstwy Siły: Sąsiedzi -> Bufor -> Pełne Pokrycie)',
+            ], '9');
         }
 
         // Ile kuponow LACZNIE (nie na blok - patrz finding B1 w docs/REVIEW.md).
         $betsTotal = (int) ($input->getOption('bets') ?: 0);
         if ($betsTotal < 1) {
-            $default = in_array($mode, ['7', '8'], true)
+            $default = in_array($mode, ['7', '8', '9'], true)
                 ? (count($fullPool) >= 40 ? '100' : '25')
                 : '10';
             $betsTotal = (int) ($input->isInteractive()
@@ -542,6 +543,11 @@ class LottoTuiCommand extends Command
             $io->note('Kupony zostana wygenerowane, ale bez warstwy statystycznej: wszystkie liczby sa traktowane jednakowo.');
         } elseif ($history['warning'] !== null) {
             $io->note($history['warning']);
+        }
+
+        $latestDraw = $this->parseNumbers($input->getOption('latest-draw'));
+        if (empty($latestDraw) && !empty($history['draws'])) {
+            $latestDraw = $history['draws'][0] ?? [];
         }
 
         $gameForPipeline = $game;
@@ -591,6 +597,7 @@ class LottoTuiCommand extends Command
             coverDecades: $coverDecades || $poolMode === 'Decades',
             withNeighbours: $includeNeighbours,
             neighboursRatio: $neighboursRatio,
+            latestDraw: $latestDraw,
         );
 
         $io->text('Generowanie pakietu (tryb ' . $mode . ')...');

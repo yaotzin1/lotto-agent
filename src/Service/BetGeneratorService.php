@@ -36,6 +36,21 @@ class BetGeneratorService
         $optimizer = $this->statisticalOptimizer ?? new StatisticalOptimizerService(new GameRegistryService(), new \Psr\Log\NullLogger());
         return $optimizer->optimizeBetsWithFullCoverage($pool, $pick, $limit, $frequencies, $maxNumber, $options);
     }
+
+    // === SILNIK KASKADOWEGO SYSTEMU SĄSIADÓW (TIERED NEIGHBOUR CASCADE) ===
+    public function generateTieredNeighbourBets(
+        array $pool,
+        int $pick,
+        int $limit,
+        array $frequencies,
+        int $maxNumber,
+        array $latestDraw = [],
+        array $options = []
+    ): array {
+        $optimizer = $this->statisticalOptimizer ?? new StatisticalOptimizerService(new GameRegistryService(), new \Psr\Log\NullLogger());
+        return $optimizer->optimizeTieredNeighbourBets($pool, $pick, $limit, $frequencies, $maxNumber, $latestDraw, $options);
+    }
+
     /**
      * Zwraca krok faktycznie względnie pierwszy z rozmiarem puli.
      *

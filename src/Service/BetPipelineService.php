@@ -83,6 +83,26 @@ class BetPipelineService
         ];
 
         switch ($request->mode) {
+            case '9':
+                $latestDraw = $request->latestDraw;
+                if (empty($latestDraw) && !empty($request->draws)) {
+                    $firstDraw = $request->draws[0] ?? [];
+                    $latestDraw = is_array($firstDraw) && isset($firstDraw['numbers'])
+                        ? $firstDraw['numbers']
+                        : (is_array($firstDraw) ? $firstDraw : []);
+                }
+                $result = $this->statisticalOptimizer->optimizeTieredNeighbourBets(
+                    $pool,
+                    $pick,
+                    $request->betsTotal,
+                    $request->frequencies,
+                    $maxNumber,
+                    $latestDraw,
+                    $options
+                );
+
+                return [[['type' => 'precalc', 'bets' => $result['bets']]], $result['report']];
+
             case '8':
                 $result = $this->statisticalOptimizer->optimizeBetsWithFullCoverage(
                     $pool,

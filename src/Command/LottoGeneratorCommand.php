@@ -60,7 +60,8 @@ class LottoGeneratorCommand extends Command
         $this->addOption('pool', null, InputOption::VALUE_REQUIRED, 'Pula liczb dla trybu Manual (np. "all" albo "1,5,12,18")');
         $this->addOption('pick', null, InputOption::VALUE_REQUIRED, 'Ile liczb skreślać na kuponie (tylko gry o zmiennej liczbie skreśleń: MultiMulti, Keno)');
         $this->addOption('max-rows', null, InputOption::VALUE_REQUIRED, 'Ogranicz liczbę wierszy w tabeli wyników (domyślnie: wszystkie)');
-        $this->addOption('mode', 'm', InputOption::VALUE_REQUIRED, 'Tryb pracy generatora (1-8)');
+        $this->addOption('mode', 'm', InputOption::VALUE_REQUIRED, 'Tryb pracy generatora (1-9)');
+        $this->addOption('latest-draw', 'ld', InputOption::VALUE_REQUIRED, 'Liczby ostatniego losowania jako baza sąsiadów dla Trybu 9 (np. "2,3,19,23,42,49")');
         // Opcje dla trybów 2-6, aby udokumentowane komendy dało się uruchomić
         // nieinteraktywnie (wcześniej każda z nich blokowała na $io->ask()).
         $this->addOption('bankers', null, InputOption::VALUE_REQUIRED, 'Tryb 4/6: liczby bankierów (np. "7,13,24")');
@@ -334,7 +335,7 @@ class LottoGeneratorCommand extends Command
         }
 
         $modeOpt = $input->getOption('mode');
-        if ($modeOpt && in_array((string)$modeOpt, ['1', '2', '3', '4', '5', '6', '7', '8'], true)) {
+        if ($modeOpt && in_array((string)$modeOpt, ['1', '2', '3', '4', '5', '6', '7', '8', '9'], true)) {
             $mode = (string)$modeOpt;
         } else {
             $io->section("METODA PRACY (Generator)");
@@ -347,13 +348,14 @@ class LottoGeneratorCommand extends Command
                 '6' => '[6] SYSTEM ROZDZIELNY (Bankierzy Rotacyjni)',
                 '7' => '[7] OPTYMALIZACJA STATYSTYCZNA (Synergia Par/Trójek - Tryb Hot)',
                 '8' => '[8] RANKINGOWE PEŁNE POKRYCIE (Synergia Par + Gwarancja 100% Puli)',
-            ], '8');
+                '9' => '[9] KASKADOWY SYSTEM SĄSIADÓW (Warstwy Siły: Sąsiedzi -> Bufor -> Pełne Pokrycie)',
+            ], '9');
         }
 
         // Ile kuponow LACZNIE (nie na blok - patrz finding B1 w docs/REVIEW.md).
         $betsTotal = (int) ($input->getOption('bets') ?: 0);
         if ($betsTotal < 1) {
-            $default = in_array($mode, ['7', '8'], true)
+            $default = in_array($mode, ['7', '8', '9'], true)
                 ? (count($fullPool) >= 40 ? '100' : '25')
                 : '10';
             $betsTotal = (int) $io->ask('Ile zakladow wygenerowac LACZNIE?', $default);
@@ -368,6 +370,17 @@ class LottoGeneratorCommand extends Command
             $io->note('Kupony zostana wygenerowane, ale bez warstwy statystycznej: wszystkie liczby sa traktowane jednakowo.');
         } elseif ($history['warning'] !== null) {
             $io->note($history['warning']);
+        }
+
+        $latestDraw = $this->parseNumbers($input->getOption('latest-draw'));
+        if (empty($latestDraw) && !empty($history['draws'])) {
+            $latestDraw = $history['draws'][0] ?? [];
+        }
+
+        if ($mode === '9') {
+            if (!empty($latestDraw)) {
+                $io->text(sprintf('★ Baza ostatniego losowania (kotwice): [%s]', implode(', ', $latestDraw)));
+            }
         }
 
         // Liczby dodatkowe (EuroJackpot 2/12, EkstraPensja/Premia 1/4)
@@ -406,6 +419,7 @@ class LottoGeneratorCommand extends Command
             coverDecades: $coverDecades || $poolMode === 'Decades',
             withNeighbours: $withNeighbours,
             neighboursRatio: $neighboursRatio,
+            latestDraw: $latestDraw,
         );
 
         $io->text('Generowanie pakietu (tryb ' . $mode . ')...');
