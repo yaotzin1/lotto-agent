@@ -12,10 +12,11 @@
    - [EuroJackpot (5/50 + 2/12)](#eurojackpot-550--212)
    - [Multi Multi (1–10/80)](#multi-multi-11080)
 3. [Horyzonty Czasowe w Statystyce (Mikro vs Średnie vs Makro)](#-3-horyzonty-czasowe-w-statystyce)
-4. [Katalog Trybów Generatora (Od [1] do [8])](#-4-katalog-trybów-generatora)
+4. [Katalog Trybów Generatora (Od [1] do [9])](#-4-katalog-trybów-generatora)
    - [Tryb [4]: Snajper Hybrydowy (Stali Bankierzy)](#tryb-4-snajper-hybrydowy-stali-bankierzy)
    - [Tryb [6]: Bankierzy Rotacyjni (System Rozdzielny)](#tryb-6-bankierzy-rotacyjni-system-rozdzielny)
    - [Tryb [8]: Rankingowe Pełne Pokrycie (Zero-Drop Synergy)](#tryb-8-rankingowe-pełne-pokrycie-zero-drop-synergy)
+   - [Tryb [9]: Kaskadowy System Warstwowy Sąsiadów (Tiered Neighbour Cascade)](#tryb-9-kaskadowy-system-warstwowy-sąsiadów-tiered-neighbour-cascade)
    - [Tryb [5]: System Fraktalny (Kaskady Klastrów)](#tryb-5-system-fraktalny-kaskady-klastrów)
    - [Tryb [7]: Łowca Synergii Hot (Koncentracja)](#tryb-7-łowca-synergii-hot-koncentracja)
    - [Tryb [2]: Inteligentny Krupier (Zbalansowany)](#tryb-2-inteligentny-krupier-zbalansowany)
@@ -225,6 +226,31 @@ sumy poza szczytem dzwonu. Trafisz tak samo często — ale rzadziej z kimś si�
   2. Pozostałe kupony łączą najsilniejsze statystycznie pary (*Pair Affinity*) i dzwon Gaussa.
   3. Kupony posortowane według *Fitness Score* (od Kuponu `#1 ★ TOP SYNERGIA`).
 * **Kiedy stosować:** Zawsze, gdy chcesz grać z całego bębna bez odrzucania żadnej liczby (30–500 zakładów).
+
+---
+
+### Tryb [9]: Kaskadowy System Warstwowy Sąsiadów (Tiered Neighbour Cascade)
+* **Zasada:** Cały bęben (49 liczb w Lotto, 42 w Mini Lotto) zostaje automatycznie podzielony na **3 dynamiczne warstwy siły (Tiers)** w oparciu o ostatnie losowanie, po czym generator buduje zakłady uszeregowane **od najsilniejszych statystycznie do najsłabszych** z gwarancją 100% pokrycia bębna (Zero-Drop).
+* **Struktura warstw:**
+  1. 🔥 **Tier 1: Pula Silna (Kotwice + Sąsiedzi $\pm 1$)** — liczby z ostatniego losowania (np. `2, 3, 19, 23, 42, 49`) oraz ich bezpośredni sąsiedzi (np. `1, 4, 18, 20, 22, 24, 41, 43, 48`) — ok. 14–17 liczb.
+  2. ⚡ **Tier 2: Pula Średnia / Bufor (Sąsiedzi $\pm 2$ + Synergia Hot)** — rozszerzeni sąsiedzi oraz liczby o najwyższej frekwencji i synergii par z historią.
+  3. ❄️ **Tier 3: Pula Uśpiona / Domknięcie Zero-Drop** — pozostałe liczby bębna, gwarantujące, że żadna kula nie zostanie pominięta.
+* **Kaskada i ranking:**
+  * Kupony na szczycie tabeli (`#1`, `#2`... `[★ ELITA SĄSIADÓW]`) mają 3–5 liczb z Tier 1 i najwyższy Synergy Score.
+  * Kupony środkowe (`[⚡ MOCNY BALANS]`) tworzą most klastrowy.
+  * Kupony dolne (`[🌱 PRZEJŚCIE TRENDU]`) domykają pozostałe kule z Tier 3.
+* **Kiedy stosować:** Idealne, gdy grasz całym bębnem i chcesz inwestować proporcjonalnie do budżetu — jeśli masz budżet na 5 kuponów, wybierasz TOP 5 z listy; jeśli grasz syndykatem (25–50 kuponów), obstawiasz całą kaskadę ze 100% gwarancją bębna.
+
+```bash
+# Lotto: pełny bęben 49 liczb, 25 zakładów w kaskadzie sąsiadów:
+php bin/console app:lotto-generator --game=Lotto --pool-mode=Manual --pool=all --mode=9 --bets=25
+
+# Z ręczną definicją ostatniego losowania jako bazy sąsiadów:
+php bin/console app:lotto-generator --game=Lotto --pool-mode=Manual --pool=all --mode=9 --bets=25 --latest-draw="2,3,19,23,42,49"
+
+# Mini Lotto: 42 liczby, 15 zakładów kaskadowych:
+php bin/console app:lotto-generator --game=MiniLotto --pool-mode=Manual --pool=all --mode=9 --bets=15
+```
 
 ---
 

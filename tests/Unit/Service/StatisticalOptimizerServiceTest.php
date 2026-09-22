@@ -268,4 +268,99 @@ class StatisticalOptimizerServiceTest extends TestCase
         $fit3 = $this->service->calculateBetFitness($bet3, $pairMatrix, $frequencies, $gaussParams, 49, true);
         $this->assertLessThan($fitWithNeighbours['total_score'] - 150, $fit3['total_score']);
     }
+
+    public function testOptimizeTieredNeighbourBetsDecomposesPoolAndGuaranteesZeroDrop(): void
+    {
+        $pool = range(1, 49);
+        $frequencies = array_fill_keys($pool, 10);
+        $latestDraw = [2, 3, 19, 23, 42, 49];
+
+        $result = $this->service->optimizeTieredNeighbourBets(
+            $pool,
+            6,
+            25,
+            $frequencies,
+            49,
+            $latestDraw
+        );
+
+        $this->assertCount(25, $result['bets']);
+
+        // Weryfikacja dekompozycji na warstwy
+        $tiers = $result['tiers'];
+        $t1 = $tiers['tier1'];
+        $t2 = $tiers['tier2'];
+        $t3 = $tiers['tier3'];
+        $anchors = $tiers['anchors'];
+        $nbrs = $tiers['neighbours'];
+
+        $this->assertEquals([2, 3, 19, 23, 42, 49], $anchors);
+        // Sprawdź czy sąsiedzi ±1 są poprawni (1, 4, 18, 20, 22, 24, 41, 43, 48)
+        $this->assertContains(1, $nbrs);
+        $this->assertContains(4, $nbrs);
+        $this->assertContains(18, $nbrs);
+        $this->assertContains(20, $nbrs);
+        $this->assertContains(22, $nbrs);
+        $this->assertContains(24, $nbrs);
+        $this->assertContains(41, $nbrs);
+        $this->assertContains(43, $nbrs);
+        $this->assertContains(48, $nbrs);
+
+        // Rozłączność warstw i pełne pokrycie 49 liczb
+        $this->assertEmpty(array_intersect($t1, $t2));
+        $this->assertEmpty(array_intersect($t1, $t3));
+        $this->assertEmpty(array_intersect($t2, $t3));
+        $this->assertSame(49, count($t1) + count($t2) + count($t3));
+
+        // Gwarancja Zero-Drop (każda z 49 liczb w co najmniej jednym zakładzie)
+        $this->assertSame(49, $result['report']['unique_numbers_used']);
+        $this->assertTrue($result['report']['is_full_coverage_guaranteed']);
+        $this->assertEquals(100.0, $result['report']['pool_coverage_pct']);
+
+        // Weryfikacja ścisłego sortowania od najsilniejszego do najsłabszego
+        $ranked = $result['report']['ranked_bets'];
+        $this->assertCount(25, $ranked);
+        for ($i = 0; $i < count($ranked) - 1; $i++) {
+            $this->assertGreaterThanOrEqual(
+                $ranked[$i + 1]['fitness']['total_score'],
+                $ranked[$i]['fitness']['total_score'],
+                "Zakład #$i musi mieć wyższy lub równy score niż zakład #" . ($i + 1)
+            );
+        }
+
+        // Najsilniejszy zakład ma wyższy lub równy udział Tier 1 niż najsłabszy zakład (domykający)
+        $topBetFit = $ranked[0]['fitness'];
+        $bottomBetFit = $ranked[count($ranked) - 1]['fitness'];
+        $this->assertGreaterThanOrEqual(2, $topBetFit['tier1_count']);
+        $this->assertTrue(
+            $topBetFit['tier1_count'] >= $bottomBetFit['tier1_count'],
+            sprintf('Top bet Tier 1 (%d) musi być >= Bottom bet Tier 1 (%d)', $topBetFit['tier1_count'], $bottomBetFit['tier1_count'])
+        );
+    }
+
+    public function testOptimizeTieredNeighbourBetsSmallBudgetFocusesOnTier1(): void
+    {
+        $pool = range(1, 49);
+        $frequencies = array_fill_keys($pool, 10);
+        $latestDraw = [2, 3, 19, 23, 42, 49];
+
+        // Tylko 5 zakładów (5 * 6 = 30 < 49 liczb)
+        $result = $this->service->optimizeTieredNeighbourBets(
+            $pool,
+            6,
+            5,
+            $frequencies,
+            49,
+            $latestDraw
+        );
+
+        $this->assertCount(5, $result['bets']);
+        $ranked = $result['report']['ranked_bets'];
+
+        // Wszystkie zakłady w małym budżecie powinny być skupione na Tier 1 i Tier 2
+        foreach ($ranked as $item) {
+            $this->assertGreaterThanOrEqual(1, $item['fitness']['tier1_count']);
+            $this->assertNotEmpty($item['fitness']['tier_summary']);
+        }
+    }
 }

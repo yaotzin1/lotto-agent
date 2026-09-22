@@ -69,7 +69,7 @@ class BetPipelineServiceTest extends TestCase
      */
     public function testEveryModeRespectsTheTotalBetCount(): void
     {
-        foreach (['1', '2', '3', '5', '7', '8'] as $mode) {
+        foreach (['1', '2', '3', '5', '7', '8', '9'] as $mode) {
             $result = $this->pipeline->run($this->request($mode, 12));
 
             self::assertLessThanOrEqual(
@@ -91,7 +91,7 @@ class BetPipelineServiceTest extends TestCase
 
     public function testPacketNeverContainsDuplicateCoupons(): void
     {
-        foreach (['2', '5', '8'] as $mode) {
+        foreach (['2', '5', '8', '9'] as $mode) {
             $result = $this->pipeline->run($this->request($mode, 20));
             $keys = array_map(static fn(array $b): string => implode('-', $b), $result->bets);
 
@@ -99,9 +99,31 @@ class BetPipelineServiceTest extends TestCase
         }
     }
 
+    public function testMode9TieredNeighbourCascadePipeline(): void
+    {
+        $pool = range(1, 49);
+        $request = new BetPipelineRequest(
+            game: $this->lotto,
+            pool: $pool,
+            mode: '9',
+            betsTotal: 25,
+            frequencies: array_fill_keys($pool, 10),
+            latestDraw: [2, 3, 19, 23, 42, 49],
+        );
+
+        $result = $this->pipeline->run($request);
+
+        self::assertCount(25, $result->bets);
+        self::assertNotNull($result->statsReport);
+        self::assertSame('9', $result->statsReport['mode']);
+        self::assertTrue($result->statsReport['is_full_coverage_guaranteed']);
+        self::assertArrayHasKey('tiers', $result->statsReport);
+        self::assertEquals([2, 3, 19, 23, 42, 49], $result->statsReport['tiers']['anchors']);
+    }
+
     public function testEveryCouponHasExactlyPickNumbers(): void
     {
-        foreach (['1', '4', '6', '7', '8'] as $mode) {
+        foreach (['1', '4', '6', '7', '8', '9'] as $mode) {
             $result = $this->pipeline->run($this->request($mode, 8, [
                 'bankers' => [3, 7, 11, 19, 23],
                 'bankersPerBet' => 2,

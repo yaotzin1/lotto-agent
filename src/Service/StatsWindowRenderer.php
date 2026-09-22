@@ -76,13 +76,22 @@ class StatsWindowRenderer
         foreach ($rankedBets as $i => $item) {
             $fit = $item['fitness'];
 
+            $status = isset($fit['tier_summary'])
+                ? $this->tieredStatusTag($i, $fit)
+                : $this->statusTag($i, (bool) $fit['is_gaussian_optimal']);
+
+            $scoreLabel = sprintf('%.1f', $fit['total_score']);
+            if (isset($fit['tier_summary'])) {
+                $scoreLabel .= sprintf(' (%s)', $fit['tier_summary']);
+            }
+
             $row = [
                 '#' . ($i + 1),
                 implode(', ', array_map(static fn(int $n): string => sprintf('%2d', $n), $item['bet'])),
                 $fit['sum'],
                 $fit['parity_ratio'],
-                sprintf('%.1f', $fit['total_score']),
-                $this->statusTag($i, (bool) $fit['is_gaussian_optimal']),
+                $scoreLabel,
+                $status,
             ];
 
             if ($hasExtra) {
@@ -114,6 +123,26 @@ class StatsWindowRenderer
         }
     }
 
+    private function tieredStatusTag(int $index, array $fit): string
+    {
+        $profile = $fit['tier_profile'] ?? 'PROFIL';
+        $t1 = $fit['tier1_count'] ?? 0;
+
+        if ($t1 >= 3) {
+            return sprintf('<fg=yellow;options=bold>[★ %s]</>', $profile);
+        }
+
+        if ($t1 === 2) {
+            return sprintf('<fg=cyan>[⚡ %s]</>', $profile);
+        }
+
+        if ($t1 === 1) {
+            return sprintf('<fg=green>[🌱 %s]</>', $profile);
+        }
+
+        return sprintf('<fg=gray>[❄️ %s]</>', $profile);
+    }
+
     private function statusTag(int $index, bool $isGaussianOptimal): string
     {
         if ($index === 0) {
@@ -138,9 +167,61 @@ class StatsWindowRenderer
     {
         $io->section('📊 OKNO STATYSTYCZNE: PROFIL ZESTAWU I ROZWODNIENIE');
 
+        if (isset($statsReport['tiers'])) {
+            $this->renderTierCascade($io, $statsReport['tiers']);
+        }
+
         $this->renderAffinitySource($io, $statsReport);
         $this->renderDilution($io, $statsReport, $poolSize);
         $this->renderBenchmark($io, $statsReport);
+    }
+
+    /**
+     * @param array<string, mixed> $tiers
+     */
+    private function renderTierCascade(SymfonyStyle $io, array $tiers): void
+    {
+        $t1 = $tiers['tier1'] ?? [];
+        $t2 = $tiers['tier2'] ?? [];
+        $t3 = $tiers['tier3'] ?? [];
+        $anchors = $tiers['anchors'] ?? [];
+        $nbrs = $tiers['neighbours'] ?? [];
+
+        $io->text(sprintf(
+            '🔥 <fg=yellow;options=bold>TIER 1: Pula Silna (%d liczb)</> -> [%s]',
+            count($t1),
+            implode(', ', $t1)
+        ));
+        if (!empty($anchors)) {
+            $io->text(sprintf('   • Kotwice (ostatnie losowanie): [%s]', implode(', ', $anchors)));
+        }
+        if (!empty($nbrs)) {
+            $io->text(sprintf('   • Bezpośredni sąsiedzi ±1: [%s]', implode(', ', $nbrs)));
+        }
+
+        $io->text(sprintf(
+            '⚡ <fg=cyan;options=bold>TIER 2: Pula Średnia / Bufor (%d liczb)</> -> [%s]',
+            count($t2),
+            implode(', ', $t2)
+        ));
+
+        if (!empty($t3)) {
+            $io->text(sprintf(
+                '❄️ <fg=gray;options=bold>TIER 3: Domknięcie Bębna / Uśpione (%d liczb)</> -> [%s]',
+                count($t3),
+                implode(', ', $t3)
+            ));
+        }
+
+        if (isset($tiers['avg_tier1'], $tiers['avg_tier2'], $tiers['avg_tier3'])) {
+            $io->text(sprintf(
+                'Średni skład kuponu: <fg=yellow>Tier 1: %.1f</> | <fg=cyan>Tier 2: %.1f</> | <fg=gray>Tier 3: %.1f</>',
+                $tiers['avg_tier1'],
+                $tiers['avg_tier2'],
+                $tiers['avg_tier3']
+            ));
+        }
+        $io->newLine();
     }
 
     /**
