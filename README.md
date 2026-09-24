@@ -8,11 +8,11 @@
 [![Sponsor](https://img.shields.io/badge/GitHub-Sponsor-EA4AAA.svg?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/yaotzin1)
 -->
 
-A Symfony 8 CLI & TUI application containerized with Docker, designed as an AI lotto agent utilizing Google Gemini models, ReAct Agent tooling, and advanced combinatorial & statistical optimization engines.
+A Symfony 8 CLI & TUI application containerized with Docker, designed as an AI lotto agent utilizing multi-provider LLMs (Google Gemini, Anthropic Claude, OpenAI, DeepSeek), ReAct Agent tooling, and advanced combinatorial & statistical optimization engines.
 
 ## Key Features
 
-1. **ReAct Agent AI (`app:lotto-agent`)**: Autonomous multi-turn AI agent that queries LOTTO statistics, evaluates co-occurrences, k-clique clusters, and builds high-potential number pools.
+1. **ReAct Agent AI (`app:lotto-agent`)**: Autonomous multi-turn AI agent that queries LOTTO statistics, evaluates co-occurrences, k-clique clusters, and builds high-potential number pools using your preferred AI model (Gemini, Claude Opus/Sonnet, GPT-4o/5, DeepSeek-V3/R1).
 2. **Mathematical Generator Suite (`app:lotto-generator`)**: 8 advanced mathematical wheeling & reduction modes (Fractal rolling overlap, Smart Croupier, Floating Bankers, Weighted, Split Bankers, and Statistical Optimizer).
 3. **Interactive TUI Suite (`app:lotto-tui`)**: Terminal User Interface with interactive menus, progress indicators, and coverage matrix visualization.
 4. **Statistical Dashboard & Dilution Optimizer (`app:lotto-stats` / Mode 7)**:
@@ -53,12 +53,17 @@ When selecting a large pool (e.g. all 49 numbers) and generating a limited budge
 
    | Variable | Required | Purpose |
    |---|---|---|
-   | `GEMINI_API_KEY` | for `app:lotto-agent` | Google Gemini access for the ReAct agent ([get one](https://aistudio.google.com/app/apikey)) |
-   | `LOTTO_API_KEY` | for live draw history | Draw-history API access. Without it the optimizer falls back to a frequency heuristic that carries no pair information. |
-   | `APP_SECRET` | yes | Standard Symfony secret; any random string works locally. |
+   | `GEMINI_API_KEY` | for Gemini | Google Gemini access ([get one](https://aistudio.google.com/app/apikey)) |
+   | `ANTHROPIC_API_KEY`| for Claude | Anthropic Claude access (Claude 3.7 Sonnet, Claude Opus) |
+   | `OPENAI_API_KEY`   | for OpenAI | OpenAI GPT models (GPT-4o, GPT-5) |
+   | `DEEPSEEK_API_KEY` | for DeepSeek| DeepSeek-V3 / DeepSeek-R1 access |
+   | `AI_PROVIDER`      | optional | Default AI provider (`gemini`, `claude`, `openai`, `deepseek`) |
+   | `AI_MODEL`         | optional | Default model override (e.g. `claude-3-opus-20240229`, `gpt-4o`) |
+   | `LOTTO_API_KEY`    | for live draw history | Draw-history API access. Without it the optimizer falls back to a frequency heuristic that carries no pair information. |
+   | `APP_SECRET`       | yes | Standard Symfony secret; any random string works locally. |
 
-   The purely mathematical modes (`app:lotto-generator`, `app:lotto-stats`) run without a
-   Gemini key — only the AI agent and live statistics need credentials.
+   The purely mathematical modes (`app:lotto-generator`, `app:lotto-stats`) run without an
+   AI key — only the AI agent (`app:lotto-agent`) and AI strategic commentary (`app:lotto-stats --ai`) require model credentials.
 
 2. **Build the Docker Container:**
    ```bash

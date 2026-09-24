@@ -42,6 +42,8 @@ class LottoAgentCommand extends Command
         $this->addOption('sessions', 's', InputOption::VALUE_REQUIRED, 'Ilość ostatnich losowań do analizy (zamiast miesięcy)');
         $this->addOption('strategy', 'st', InputOption::VALUE_REQUIRED, 'Strategia doboru liczb przez AI (syndicate/balanced/aggressive/decades)');
         $this->addOption('cover-decades', 'cd', InputOption::VALUE_NONE, 'Wymuś równomierne pokrycie wszystkich dekad');
+        $this->addOption('provider', 'pv', InputOption::VALUE_REQUIRED, 'Wybór dostawcy AI: gemini, claude, openai, deepseek');
+        $this->addOption('model', 'md', InputOption::VALUE_REQUIRED, 'Model AI (np. claude-3-7-sonnet-20250219, gpt-4o, gemini-3.7-flash)');
         $this->addOption('json-output', 'j', InputOption::VALUE_NONE, 'Zwróć odpowiedź w formacie JSON');
     }
 
@@ -100,13 +102,20 @@ class LottoAgentCommand extends Command
             'json' => $isJson,
         ]);
 
+        $provider = $input->getOption('provider');
+        $model = $input->getOption('model');
+
         if (!$isJson) {
             $io->title("Agent Lotto - Analiza gry: $gameType");
         }
 
         try {
             if (!$isJson) {
-                $io->section("Inicjalizacja ReAct Agent AI (Reasoning + Acting)...");
+                $providerInfo = $provider ? strtoupper($provider) : 'Gemini AI';
+                if ($model) {
+                    $providerInfo .= " ($model)";
+                }
+                $io->section(sprintf("Inicjalizacja ReAct Agent AI (%s + Narzędzia Statystyczne)...", $providerInfo));
             }
 
             $onStepCallback = function (string $type, array $data) use ($io, $isJson): void {
@@ -139,7 +148,9 @@ class LottoAgentCommand extends Command
                 $sessions,
                 $months,
                 $includeNeighbours,
-                $coverDecades
+                $coverDecades,
+                $provider,
+                $model
             );
 
             $pool = $reactResult['pool'];
@@ -150,6 +161,8 @@ class LottoAgentCommand extends Command
             if ($isJson) {
                 $output->writeln(json_encode([
                     'game' => $gameType,
+                    'provider' => $provider ?: 'gemini',
+                    'model' => $model,
                     'is_fallback' => $isFallback,
                     'reasoning' => $reasoning,
                     'candidate_pool' => $pool,
