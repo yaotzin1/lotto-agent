@@ -77,6 +77,8 @@ class LottoGeneratorCommand extends Command
         $this->addOption('with-neighbours', 'wn', InputOption::VALUE_NONE, 'W trybie Decades lub AI: uwzględniaj sąsiadów (±1) ostatnich losowań');
         $this->addOption('neighbours', null, InputOption::VALUE_NONE, 'Alias dla --with-neighbours');
         $this->addOption('neighbours-ratio', 'nr', InputOption::VALUE_REQUIRED, 'Docelowy procentowy udział sąsiadów w puli (np. 60, 60%, 0.6 - domyślnie: 60%)', '60%');
+        $this->addOption('provider', 'pv', InputOption::VALUE_REQUIRED, 'Wybór dostawcy AI: gemini, claude, openai, deepseek');
+        $this->addOption('model', 'md', InputOption::VALUE_REQUIRED, 'Model AI (np. claude-3-7-sonnet-20250219, gpt-4o, gemini-3.7-flash)');
     }
 
     /**
@@ -227,7 +229,9 @@ class LottoGeneratorCommand extends Command
                 }
             };
 
-            $result = $this->reactAgentService->runAgentLoop($gameType, $poolSize, $aiStrategy, $onStepCallback, $sessions, null, $withNeighbours, $coverDecades);
+            $providerOpt = $input->getOption('provider');
+            $modelOpt = $input->getOption('model');
+            $result = $this->reactAgentService->runAgentLoop($gameType, $poolSize, $aiStrategy, $onStepCallback, $sessions, null, $withNeighbours, $coverDecades, $providerOpt, $modelOpt);
             $fullPool = $result['pool'] ?? $result['selected_pool'] ?? [];
             sort($fullPool);
 

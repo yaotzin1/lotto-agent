@@ -87,6 +87,8 @@ class LottoTuiCommand extends Command
         $this->addOption('stride', null, InputOption::VALUE_REQUIRED, 'Krok kroczenia wstecz dla trybu Stride (np. 257 lub 127)');
         $this->addOption('stride-strategy', null, InputOption::VALUE_REQUIRED, 'Strategia w trybie Stride (anchor_neighbours lub multi_anchor)');
         $this->addOption('anchors', 'a', InputOption::VALUE_REQUIRED, 'Liczba losowań kotwicznych wstecz w trybie Stride (np. 2, 3, 4, domyślnie: auto)');
+        $this->addOption('provider', 'pv', InputOption::VALUE_REQUIRED, 'Wybór dostawcy AI: gemini, claude, openai, deepseek');
+        $this->addOption('model', 'md', InputOption::VALUE_REQUIRED, 'Model AI (np. claude-3-7-sonnet-20250219, gpt-4o, gemini-3.7-flash)');
     }
 
     private function promptSelect(string $question, array $choices, ?string $default = null): string
@@ -292,7 +294,9 @@ class LottoTuiCommand extends Command
             $monthsOpt = $input->getOption('months');
             $months = $monthsOpt !== null && is_numeric($monthsOpt) ? (int)$monthsOpt : null;
 
-            $result = $this->reactAgentService->runAgentLoop($gameType, $poolSize, $aiStrategy, $onStepCallback, $sessions, $months, $includeNeighbours, $coverDecades);
+            $providerOpt = $input->getOption('provider');
+            $modelOpt = $input->getOption('model');
+            $result = $this->reactAgentService->runAgentLoop($gameType, $poolSize, $aiStrategy, $onStepCallback, $sessions, $months, $includeNeighbours, $coverDecades, $providerOpt, $modelOpt);
             $fullPool = $result['pool'] ?? $result['selected_pool'] ?? [];
             sort($fullPool);
 

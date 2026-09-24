@@ -6,6 +6,7 @@ namespace App\Command;
 
 use App\Service\GameRegistryService;
 use App\Service\GeminiApiClient;
+use App\Service\Llm\LlmClientResolver;
 use App\Service\LottoApiClient;
 use App\Service\HistoricalDataProvider;
 use App\Service\StatisticalOptimizerService;
@@ -29,7 +30,8 @@ class LottoStatsCommand extends Command
         private readonly StatisticalOptimizerService $optimizerService,
         private readonly HistoricalDataProvider $historicalDataProvider,
         private readonly GeminiApiClient $geminiApiClient,
-        private readonly LoggerInterface $logger
+        private readonly LoggerInterface $logger,
+        private readonly ?LlmClientResolver $llmClientResolver = null
     ) {
         parent::__construct();
     }
@@ -44,7 +46,9 @@ class LottoStatsCommand extends Command
         $this->addOption('sessions', 's', InputOption::VALUE_REQUIRED, 'Liczba ostatnich losowań do pobrania statystyk', '50');
         $this->addOption('months', 'mo', InputOption::VALUE_REQUIRED, 'Liczba miesięcy do pobrania statystyk');
         $this->addOption('full-coverage', null, InputOption::VALUE_OPTIONAL, 'Wymuś 100% pokrycie puli wejściowej (true/false)', 'true');
-        $this->addOption('ai', null, InputOption::VALUE_NONE, 'Dołącz strategiczną analizę i komentarz AI (Google Gemini)');
+        $this->addOption('ai', null, InputOption::VALUE_NONE, 'Dołącz strategiczną analizę i komentarz AI (Google Gemini, Claude, OpenAI, DeepSeek)');
+        $this->addOption('provider', 'pv', InputOption::VALUE_REQUIRED, 'Wybór dostawcy AI do analizy: gemini, claude, openai, deepseek');
+        $this->addOption('model', 'md', InputOption::VALUE_REQUIRED, 'Model AI (np. claude-3-7-sonnet-20250219, gpt-4o, gemini-3.7-flash)');
         $this->addOption('json-output', 'j', InputOption::VALUE_NONE, 'Zwróć wynik w formacie JSON');
     }
 
@@ -198,9 +202,22 @@ class LottoStatsCommand extends Command
 
         // Komentarz AI (opcjonalny)
         $aiAnalysis = '';
+        $providerOpt = $input->getOption('provider');
+        $modelOpt = $input->getOption('model');
+        $llmClient = $this->llmClientResolver !== null
+            ? $this->llmClientResolver->resolve($providerOpt, $modelOpt)
+            : ($modelOpt !== null ? $this->geminiApiClient->withModel($modelOpt) : $this->geminiApiClient);
+
+        $providerDisplayName = match ($llmClient->getProviderName()) {
+            'claude' => 'Claude (Anthropic)',
+            'openai' => 'OpenAI',
+            'deepseek' => 'DeepSeek',
+            default => 'Google Gemini',
+        };
+
         if ($useAi) {
             if (!$isJson) {
-                $io->text("🧠 Generowanie komentarza strategicznego przez Google Gemini...");
+                $io->text(sprintf("🧠 Generowanie komentarza strategicznego przez %s (%s)...", $providerDisplayName, $llmClient->getModel()));
             }
             try {
                 $hotTop = array_slice($frequencies, 0, 5, true);
@@ -225,15 +242,10 @@ class LottoStatsCommand extends Command
                     $betsCount
                 );
 
-                $payload = [
-                    'contents' => [['role' => 'user', 'parts' => [['text' => $aiPrompt]]]],
-                    'generationConfig' => ['temperature' => 0.4],
-                ];
-
-                $aiAnalysis = $this->geminiApiClient->generateContent($payload, 30);
+                $aiAnalysis = $llmClient->generateText($aiPrompt, "Jesteś Głównym Analitykiem Gier Liczbowych.");
             } catch (\Throwable $e) {
                 $this->logger->warning('Błąd generowania komentarza AI: ' . $e->getMessage());
-                $aiAnalysis = "Nie udało się połączyć z API Gemini: " . $e->getMessage();
+                $aiAnalysis = sprintf("Nie udało się połączyć z API %s: %s", $providerDisplayName, $e->getMessage());
             }
         }
 
@@ -255,6 +267,8 @@ class LottoStatsCommand extends Command
                 'bets' => $bets,
                 'report' => $report,
                 'ai_analysis' => $aiAnalysis,
+                'ai_provider' => $useAi ? $llmClient->getProviderName() : null,
+                'ai_model' => $useAi ? $llmClient->getModel() : null,
             ], JSON_PRETTY_PRINT));
             return Command::SUCCESS;
         }
@@ -397,7 +411,7 @@ class LottoStatsCommand extends Command
 
         // 6. Komentarz AI (jeśli wygenerowano)
         if (!empty($aiAnalysis)) {
-            $io->section("🤖 6. Ekspertyza Analityka AI (Google Gemini)");
+            $io->section(sprintf("🤖 6. Ekspertyza Analityka AI (%s - %s)", $providerDisplayName, $llmClient->getModel()));
             $io->block($aiAnalysis, null, 'fg=white;bg=blue', ' ', true);
         }
 

@@ -100,13 +100,25 @@ docker compose run --rm app sh          # powłoka w kontenerze
 docker compose run --rm app php vendor/bin/phpunit
 ```
 
-## Wybór modelu
+## Wybór dostawcy i modelu AI (Multi-Provider Support)
 
-`GeminiApiClient::FALLBACK_MODELS` to statyczna lista modeli próbowanych po kolei.
-Odpowiedź 404 (model nie istnieje) jest traktowana jak błąd przejściowy i powoduje
-przejście do kolejnej pozycji, co przy nieaktualnej liście oznacza zmarnowane zapytania.
-Aktualną listę modeli dla danego klucza sprawdzisz komendą:
+Aplikacja obsługuje wielu dostawców modeli wielojęzycznych i statystycznych z automatyczną obsługą wywoływania narzędzi (Function Calling):
+- **Google Gemini** (domyślnie `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-2.5-flash` itd.)
+- **Anthropic Claude** (`claude-3-7-sonnet-20250219`, `claude-3-opus-20240229`, `claude-3-5-sonnet` itd.)
+- **OpenAI** (`gpt-4o`, `gpt-4o-mini`, `gpt-5`)
+- **DeepSeek** (`deepseek-chat` / DeepSeek-V3, `deepseek-reasoner` / DeepSeek-R1)
 
+Dostawcę i model możesz wybrać w `.env` lub dynamicznie flagami CLI:
 ```bash
-docker compose run --rm app php bin/console app:gemini-models
+# Uruchomienie agenta z modelem Claude Opus:
+docker compose run --rm app php bin/console app:lotto-agent --provider=claude --model=claude-3-opus-20240229 --strategy=syndicate
+
+# Uruchomienie agenta z OpenAI GPT-4o:
+docker compose run --rm app php bin/console app:lotto-agent --provider=openai --model=gpt-4o
+
+# Analiza statystyczna Okna Statystycznego z modelem DeepSeek:
+docker compose run --rm app php bin/console app:lotto-stats --game=Lotto --pool=all --bets=100 --ai --provider=deepseek
+
+# Sprawdzenie listy dostępnych modeli wszystkich dostawców:
+docker compose run --rm app php bin/console app:ai-models
 ```
