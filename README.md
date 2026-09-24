@@ -90,12 +90,25 @@ docker compose run --rm app php bin/console app:lotto-stats --game=Lotto --pool=
 
 # Output as JSON:
 docker compose run --rm app php bin/console app:lotto-stats --game=Lotto --pool=all --bets=100 --json-output
+
+# With AI strategic commentary using default provider (Gemini):
+docker compose run --rm app php bin/console app:lotto-stats --game=Lotto --pool=all --bets=100 --ai
+
+# With Claude 3 Opus (top quantitative data analysis model):
+docker compose run --rm app php bin/console app:lotto-stats --game=Lotto --pool=all --bets=100 --ai --provider=claude --model=claude-3-opus-20240229
+
+# With DeepSeek-R1 (dedicated mathematical reasoning & verification):
+docker compose run --rm app php bin/console app:lotto-stats --game=Lotto --pool=all --bets=100 --ai --provider=deepseek --model=deepseek-reasoner
 ```
 
 ### 2. Interactive Terminal UI (`app:lotto-tui`)
 ```bash
+# Launch interactive TUI (supports AI, Stride, and Manual pool selection):
 docker compose run --rm app php bin/console app:lotto-tui
-# Pula może być wygenerowana przez AI (Gemini), Stride (kroczenie co N losowań) lub Ręcznie.
+
+# Launch TUI pre-configured with Claude or OpenAI:
+docker compose run --rm app php bin/console app:lotto-tui --provider=claude --model=claude-3-7-sonnet-20250219
+docker compose run --rm app php bin/console app:lotto-tui --provider=openai --model=gpt-4o
 ```
 
 ### 3. Tiered Neighbour Cascade Generator (`app:lotto-generator --mode=9`)
@@ -178,22 +191,79 @@ docker compose run --rm app php bin/console app:lotto-backtest --pool-size=12 --
 docker compose run --rm app php bin/console app:lotto-backtest --game=EuroJackpot --pool-size=12 --strides="1,50"
 ```
 
-### 6. Generator Suite (`app:lotto-generator`)
+### 7. Generator Suite (`app:lotto-generator`)
 ```bash
 # Run generator with Statistical Optimization mode (Mode 7):
 docker compose run --rm app php bin/console app:lotto-generator --game=Lotto --pool-mode=Manual --mode=7 --bets=100
 
-# Run with AI candidate pool and Fractal rolling overlap (Mode 5):
+# Run with AI candidate pool and Fractal rolling overlap (Mode 5) using default AI provider:
 docker compose run --rm app php bin/console app:lotto-generator --game=Lotto --pool-mode=AI --strategy=syndicate --mode=5
+
+# Run with AI candidate pool using Claude 3.7 Sonnet:
+docker compose run --rm app php bin/console app:lotto-generator --game=Lotto --pool-mode=AI --provider=claude --model=claude-3-7-sonnet-20250219 --mode=5
 
 # Run with Decade-Balanced pool prioritizing ±1 neighbours of the latest draw (Mode 8):
 docker compose run --rm app php bin/console app:lotto-generator --game=Lotto --pool-mode=Decades --with-neighbours --pool-size=15 --mode=8 --bets=15
 ```
 
-### 7. ReAct Agent AI (`app:lotto-agent`)
+### 8. ReAct Agent AI (`app:lotto-agent`)
+Autonomous multi-turn AI agent that queries LOTTO statistics, evaluates co-occurrences, k-clique clusters, and builds high-potential number pools using Function Calling across your chosen provider:
 ```bash
+# Default provider (configured in .env or Google Gemini 3.7 Flash):
 docker compose run --rm app php bin/console app:lotto-agent --game=Lotto --strategy=syndicate --sessions=15
+
+# Using Anthropic Claude 3 Opus (Top model for quantitative & statistical reasoning):
+docker compose run --rm app php bin/console app:lotto-agent --provider=claude --model=claude-3-opus-20240229 --game=Lotto --strategy=syndicate
+
+# Using Anthropic Claude 3.7 Sonnet (Hybrid reasoning, supreme tool precision):
+docker compose run --rm app php bin/console app:lotto-agent --provider=claude --model=claude-3-7-sonnet-20250219 --game=Lotto
+
+# Using OpenAI GPT-4o:
+docker compose run --rm app php bin/console app:lotto-agent --provider=openai --model=gpt-4o --game=Lotto
+
+# Using DeepSeek-R1 (Specialized chain-of-thought mathematical reasoning):
+docker compose run --rm app php bin/console app:lotto-agent --provider=deepseek --model=deepseek-reasoner --game=Lotto
+
+# Using short CLI flag aliases (-pv for --provider, -md for --model):
+docker compose run --rm app php bin/console app:lotto-agent -pv claude -md claude-3-opus-20240229
 ```
+
+### 9. Multi-Provider AI & Model Catalog (`app:ai-models`)
+Inspect supported models, architectures, recommended statistical roles, and fallback chains:
+```bash
+# View all supported models across all providers:
+docker compose run --rm app php bin/console app:ai-models
+
+# Filter models for a specific provider:
+docker compose run --rm app php bin/console app:ai-models --provider=claude
+docker compose run --rm app php bin/console app:ai-models --provider=openai
+docker compose run --rm app php bin/console app:ai-models --provider=deepseek
+docker compose run --rm app php bin/console app:ai-models --provider=gemini
+
+# Query live remote Gemini API for available models on your account:
+docker compose run --rm app php bin/console app:ai-models --provider=gemini --live
+```
+
+#### Supported AI Providers & Models Overview
+
+| Provider (`--provider`) | Model ID (`--model`) | Name | Description & Architecture | Recommended Role in Statistics |
+|---|---|---|---|---|
+| **`claude`** (Anthropic) | `claude-3-opus-20240229` | **Claude 3 Opus** | Deep analytical reasoning & complex mathematical formulation | **Top quantitative analysis & risk synthesis** |
+| | `claude-3-7-sonnet-20250219` *(default)* | **Claude 3.7 Sonnet** | Hybrid reasoning with leading function calling & code precision | Best balance of statistical rigor and speed |
+| | `claude-3-5-sonnet-20241022` | **Claude 3.5 Sonnet v2** | Structured coding & deterministic JSON execution | Reliable JSON outputs & verification |
+| | `claude-3-5-haiku-20241022` | **Claude 3.5 Haiku** | Lightweight ultra-fast reasoning model | Quick single-turn commentary |
+| **`openai`** (OpenAI) | `gpt-4o` *(default)* | **GPT-4o** | Flagship multimodal model with native JSON and function calling | All-around lottery strategy & balance evaluation |
+| | `o3-mini` | **OpenAI o3-mini** | Specialized chain-of-thought STEM reasoning model | Complex logic and combinatorial calculations |
+| | `gpt-4o-mini` | **GPT-4o Mini** | High speed, lightweight model | Low latency batch analyses |
+| | `gpt-4-turbo` | **GPT-4 Turbo** | High context accuracy fallback | Historical stability |
+| **`deepseek`** (DeepSeek) | `deepseek-chat` *(default)* | **DeepSeek-V3** | Open-weight state-of-the-art model for logic and text | Budget-friendly high-performance data processing |
+| | `deepseek-reasoner` | **DeepSeek-R1** | Dedicated mathematical reasoning and verification model | Rigorous probability evaluation & trend hypothesis |
+| **`gemini`** (Google) | `gemini-3.7-flash` *(default)* | **Gemini 3.7 Flash** | Fast, high-reasoning multimodal engine with function calling | Default daily usage & ReAct agent loops |
+| | `gemini-2.5-pro` | **Gemini 2.5 Pro** | High-capacity analytical reasoning | Deep combinatorial analysis & large pools |
+| | `gemini-3.8-flash` | **Gemini 3.8 Flash** | High-throughput next-generation Flash model | Fastest live tool executions |
+| | `gemini-2.5-flash` | **Gemini 2.5 Flash** | Stable production flash model | Cost-effective analysis |
+
+> **Automated Fallback Mechanism**: If a provider API endpoint returns a 404 (model deprecated or not available in region) or 429 (rate-limit quota exceeded), the client automatically cascades down the provider's fallback chain to ensure uninterrupted execution.
 
 ---
 
@@ -209,6 +279,7 @@ docker compose run --rm app php bin/console app:lotto-agent --game=Lotto --strat
 | **[6]** | **SYSTEM ROZDZIELNY** | Rotational floating bankers with variable subsets | Multi-win leverage effect |
 | **[7]** | **OPTYMALIZACJA STATYSTYCZNA** | Affinity & Co-occurrence Optimizer with Gaussian filtering | Heavy dilution (Hot numbers concentration) |
 | **[8]** | **RANKINGOWE PEŁNE POKRYCIE** | Zero-Drop Guarantee (100% pool coverage) + Pair Affinity + Ranked Output | Full pool partitioning (e.g. 42 nos in 15 bets) |
+| **[9]** | **KASKADA SĄSIADÓW** | Tiered Neighbour Cascade (Tier 1: Anchors $\pm 1$, Tier 2: Buffer $\pm 2$, Tier 3: Zero-Drop) | Full drum decomposition (49 or 42 numbers) with ranked bets |
 
 👉 **Szczegółowy podręcznik gracza i komendy dla każdego trybu znajdziesz w: [docs/HOW_TO_PLAY.md](docs/HOW_TO_PLAY.md)**
 
