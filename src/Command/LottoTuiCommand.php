@@ -143,6 +143,16 @@ class LottoTuiCommand extends Command
         return $answer === 'y';
     }
 
+    /**
+     * @return array<int>
+     */
+    private function parseNumbers(?string $raw): array
+    {
+        preg_match_all('/\d+/', (string) $raw, $m);
+
+        return array_values(array_unique(array_map('intval', $m[0] ?? [])));
+    }
+
     private function parseRatio(?string $raw, float $default = 0.6): float
     {
         if ($raw === null || trim($raw) === '') {
