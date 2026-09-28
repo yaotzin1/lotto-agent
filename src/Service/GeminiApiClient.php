@@ -4,11 +4,12 @@ declare(strict_types=1);
 
 namespace App\Service;
 
+use App\Service\Llm\LlmClientInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
-class GeminiApiClient
+class GeminiApiClient implements LlmClientInterface
 {
     private const MODELS_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
     
@@ -23,12 +24,151 @@ class GeminiApiClient
         'gemini-3.5-flash-lite',
     ];
 
+    private string $activeModel = 'gemini-3.7-flash';
+    private bool $modelExplicitlySet = false;
+
     public function __construct(
         private readonly HttpClientInterface $httpClient,
         private readonly LoggerInterface $logger,
         #[Autowire('%gemini_api_key%')]
         private readonly string $geminiApiKey
     ) {
+    }
+
+    public function getProviderName(): string
+    {
+        return 'gemini';
+    }
+
+    public function getModel(): string
+    {
+        return $this->activeModel;
+    }
+
+    public function withModel(string $model): self
+    {
+        $clone = clone $this;
+        $clone->activeModel = trim($model);
+        $clone->modelExplicitlySet = true;
+        return $clone;
+    }
+
+    public function generateText(string $prompt, ?string $systemInstruction = null, float $temperature = 0.4): string
+    {
+        $payload = [
+            'contents' => [
+                [
+                    'role' => 'user',
+                    'parts' => [['text' => $prompt]],
+                ],
+            ],
+            'generationConfig' => ['temperature' => $temperature],
+        ];
+
+        if ($systemInstruction !== null && trim($systemInstruction) !== '') {
+            $payload['systemInstruction'] = [
+                'parts' => [['text' => $systemInstruction]],
+            ];
+        }
+
+        return $this->generateContent($payload);
+    }
+
+    public function chatWithTools(array $messages, array $tools, ?string $systemInstruction = null): array
+    {
+        $contents = [];
+
+        foreach ($messages as $msg) {
+            $role = $msg['role'] ?? 'user';
+
+            if ($role === 'user') {
+                $contents[] = [
+                    'role' => 'user',
+                    'parts' => [
+                        ['text' => (string) ($msg['content'] ?? '')],
+                    ],
+                ];
+            } elseif ($role === 'assistant') {
+                if (isset($msg['raw']) && is_array($msg['raw']) && !empty($msg['raw'])) {
+                    $contents[] = [
+                        'role' => 'model',
+                        'parts' => $msg['raw'],
+                    ];
+                } else {
+                    $parts = [];
+                    if (!empty($msg['content'])) {
+                        $parts[] = ['text' => (string) $msg['content']];
+                    }
+                    foreach ($msg['tool_calls'] ?? [] as $call) {
+                        $parts[] = [
+                            'functionCall' => [
+                                'name' => $call['name'],
+                                'args' => $call['args'] ?? [],
+                            ],
+                        ];
+                    }
+                    if ($parts !== []) {
+                        $contents[] = [
+                            'role' => 'model',
+                            'parts' => $parts,
+                        ];
+                    }
+                }
+            } elseif ($role === 'tool_results') {
+                $functionResponseParts = [];
+                foreach ($msg['results'] ?? [] as $res) {
+                    $responseVal = is_array($res['result'] ?? null)
+                        ? $res['result']
+                        : ['output' => (string) ($res['result_json'] ?? '')];
+
+                    $functionResponseParts[] = [
+                        'functionResponse' => [
+                            'name' => (string) ($res['name'] ?? ''),
+                            'response' => $responseVal,
+                        ],
+                    ];
+                }
+                if ($functionResponseParts !== []) {
+                    $contents[] = [
+                        'role' => 'user',
+                        'parts' => $functionResponseParts,
+                    ];
+                }
+            }
+        }
+
+        $resArray = $this->generateContentWithTools($contents, $tools, $systemInstruction);
+        $parts = $resArray['parts'] ?? [];
+
+        $textParts = [];
+        $thought = null;
+        $toolCalls = [];
+
+        foreach ($parts as $part) {
+            if (isset($part['thought']) && $part['thought'] === true) {
+                $thought = (string) ($part['text'] ?? '');
+                continue;
+            }
+            if (isset($part['text']) && is_string($part['text'])) {
+                $textParts[] = $part['text'];
+            }
+            if (isset($part['functionCall'])) {
+                $call = $part['functionCall'];
+                $toolName = (string) ($call['name'] ?? '');
+                $toolCalls[] = [
+                    'id' => $toolName,
+                    'name' => $toolName,
+                    'args' => (array) ($call['args'] ?? []),
+                ];
+            }
+        }
+
+        return [
+            'text' => trim(implode("\n", $textParts)),
+            'thought' => $thought,
+            'tool_calls' => $toolCalls,
+            'raw' => $parts,
+        ];
     }
 
     public function listModels(): array
@@ -41,6 +181,7 @@ class GeminiApiClient
             try {
                 $response = $this->httpClient->request('GET', self::MODELS_API_URL, [
                     'headers' => ['x-goog-api-key' => trim($this->geminiApiKey)],
+                    'timeout' => 10,
                 ]);
                 $data = $response->toArray();
                 break;
@@ -62,12 +203,16 @@ class GeminiApiClient
 
     public function generateContent(array $payload, int $timeoutSeconds = 120): string
     {
-        $maxRetries = count(self::FALLBACK_MODELS);
+        $modelsToTry = $this->modelExplicitlySet
+            ? [$this->activeModel]
+            : array_values(array_unique([$this->activeModel, ...self::FALLBACK_MODELS]));
+
+        $maxRetries = count($modelsToTry);
         $retryDelay = 2;
         $aiText = '';
 
         for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
-            $currentModel = self::FALLBACK_MODELS[$attempt - 1];
+            $currentModel = $modelsToTry[$attempt - 1];
             $apiUrl = sprintf('https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent', $currentModel);
 
             try {
@@ -101,7 +246,7 @@ class GeminiApiClient
                 $errorContent = $e instanceof \Symfony\Contracts\HttpClient\Exception\HttpExceptionInterface ? $e->getResponse()->getContent(false) : '';
 
                 if ($attempt < $maxRetries && ($statusCode === 404 || $statusCode === 503 || $statusCode === 429 || $statusCode >= 500)) {
-                    $nextModel = self::FALLBACK_MODELS[$attempt];
+                    $nextModel = $modelsToTry[$attempt];
                     $waitSec = $retryDelay;
                     if (preg_match('/"retryDelay":\s*"(\d+)s"/', $errorContent, $match)) {
                         $waitSec = max((int)$match[1], 2);
@@ -133,7 +278,11 @@ class GeminiApiClient
         ?string $systemInstruction = null,
         int $timeoutSeconds = 120
     ): array {
-        $maxRetries = count(self::FALLBACK_MODELS);
+        $modelsToTry = $this->modelExplicitlySet
+            ? [$this->activeModel]
+            : array_values(array_unique([$this->activeModel, ...self::FALLBACK_MODELS]));
+
+        $maxRetries = count($modelsToTry);
         $retryDelay = 2;
         $candidateContent = [];
 
@@ -155,7 +304,7 @@ class GeminiApiClient
         }
 
         for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
-            $currentModel = self::FALLBACK_MODELS[$attempt - 1];
+            $currentModel = $modelsToTry[$attempt - 1];
             $apiUrl = sprintf('https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent', $currentModel);
 
             try {
@@ -173,7 +322,7 @@ class GeminiApiClient
                 $errorContent = $e instanceof \Symfony\Contracts\HttpClient\Exception\HttpExceptionInterface ? $e->getResponse()->getContent(false) : '';
 
                 if ($attempt < $maxRetries && ($statusCode === 404 || $statusCode === 503 || $statusCode === 429 || $statusCode >= 500)) {
-                    $nextModel = self::FALLBACK_MODELS[$attempt];
+                    $nextModel = $modelsToTry[$attempt];
                     $waitSec = $retryDelay;
                     if (preg_match('/"retryDelay":\s*"(\d+)s"/', $errorContent, $match)) {
                         $waitSec = max((int)$match[1], 2);
@@ -199,7 +348,6 @@ class GeminiApiClient
 
         return $candidateContent;
     }
-
 
     public function askForPool(
         string $gameType,
@@ -247,9 +395,6 @@ Przykład poprawnej odpowiedzi: 2, 7, 12, 14, 28, 33, 41";
         preg_match_all('/\d+/', $aiText, $matches);
         $numbers = array_map('intval', $matches[0] ?? []);
 
-        // Kolejność ma znaczenie: najpierw filtr zakresu i deduplikacja, POTEM
-        // przycięcie. Odwrotna kolejność (slice -> unique) zwracała mniej liczb
-        // niż zamówiono, gdy model powtórzył którąś liczbę.
         if ($maxNumber > 0) {
             $numbers = array_filter($numbers, static fn(int $n): bool => $n >= 1 && $n <= $maxNumber);
         }

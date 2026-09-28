@@ -11,6 +11,18 @@ parameters:
     gemini_api_key: '%env(GEMINI_API_KEY)%'
     env(LOTTO_API_KEY): ''
     lotto_api_key: '%env(LOTTO_API_KEY)%'
+    env(AI_PROVIDER): 'gemini'
+    ai_provider: '%env(AI_PROVIDER)%'
+    env(AI_MODEL): ''
+    ai_model: '%env(AI_MODEL)%'
+    env(ANTHROPIC_API_KEY): ''
+    anthropic_api_key: '%env(ANTHROPIC_API_KEY)%'
+    env(OPENAI_API_KEY): ''
+    openai_api_key: '%env(OPENAI_API_KEY)%'
+    env(DEEPSEEK_API_KEY): ''
+    deepseek_api_key: '%env(DEEPSEEK_API_KEY)%'
+    env(OPENAI_BASE_URL): ''
+    openai_base_url: '%env(OPENAI_BASE_URL)%'
 
 services:
     # default configuration for services in *this* file
@@ -30,6 +42,8 @@ services:
     App\Service\AgentTools\ToolRegistry:
         arguments:
             $tools: !tagged_iterator app.lotto_agent_tool
+
+    App\Service\Llm\LlmClientInterface: '@App\Service\GeminiApiClient'
 
 
 
