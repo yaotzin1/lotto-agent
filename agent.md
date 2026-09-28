@@ -173,6 +173,37 @@ Wszystkie klienty implementują mechanizm kaskady awaryjnej. W przypadku niedost
 
 ---
 
+## Studium przypadku: Behawiorystyka ReAct w analizie kombinatorycznej (GPT-4o vs Gemini 3.7 Flash)
+
+Empiryczne porównanie przebiegów agenta autonomicznego (`app:lotto-agent`) dla gry Lotto z zadaniem wyłonienia puli kandydującej w oparciu o analizę klastrową i kaskadową (Tryb 9 – Kaskadowy System Warstwowy Sąsiadów). Wyniki obrazują krytyczną różnicę w mechanizmie samokorekty modeli ogólnych vs modeli wyposażonych w zaawansowane wnioskowanie wielokrokowe (CoT).
+
+### Zestawienie metryk wykonania
+
+| Parametr / Metryka | GPT-4o (Run 1) | Gemini 3.7 Flash (Run 2) | Różnica / Efekt |
+|---|---|---|---|
+| **Liczba tur ReAct** | 3 tury | 6 tur | Gemini eksplorował 2× dłużej |
+| **Wywołane narzędzia** | 6 wywołań (podstawowe) | 10 wywołań (+ parzystość i coverage) | Pełniejsze wykorzystanie zestawu narzędzi |
+| **Zgodność z Gaussa (Sumy)** | 30.0% (-23.3 pp do baseline) | 100.0% (+14.2 pp do baseline) | **+70 pp na korzyść Gemini** |
+| **Średni Synergy Score** | 483.7 (+102.7% do baseline) | 657.3 (+71.8% do baseline) | **+173.6 pkt** wyższa spójność par |
+| **Kluczowe modyfikacje puli** | Brak (zaakceptował zły rozkład) | Korekta w turze 4 (dodanie 8, 9, 15) | **Aktywna samokorekta w pętli** |
+| **Średnia suma puli** | Przesunięta w stronę wysokich | 152.6 (wzorcowy środek bębna) | Wyeliminowanie przeładowania dekad 40+ |
+
+### 1. Pętla ReAct i samokorekta (Reasoning Loop)
+* **GPT-4o zauważył problem, lecz go zignorował:** W uzasadnieniu model wprost zdiagnozował wadę: *„wykazuje przesunięcie w stronę wyższych sum, co może ograniczać jej skuteczność”*, po czym... natychmiast zatwierdził tę pulę. W efekcie w puli znalazło się aż 9 liczb z przedziału 37–49 (w tym ciąg `37, 38, 39, 40, 41, 42` oraz `47, 48, 49`). Model uległ kaskadowemu nawykowi szybkiego domykania kontraktu JSON zamiast cofnięcia się do fazy hipotezy.
+* **Gemini wszedł w aktywny refaktoring puli:** Po wstępnej ocenie w turze 3, Gemini zidentyfikował brak balansu i w turze 4 odrzucił liczby generujące wąskie gardło (`35, 39, 40, 42, 49`), wprowadzając w ich miejsce niskie kotwice i powtórki (`8, 9, 15, 33`). W turze 5 dodatkowo odpalił narzędzie `test_system_coverage`, sprawdzając zachowanie pakietu przed ostatecznym zatwierdzeniem.
+
+### 2. Architektura Tierów w Kaskadowym Systemie Sąsiadów (Tryb 9)
+Zmiana struktury puli wejściowej diametralnie wpłynęła na to, jak generator rozłożył warstwy w kaskadzie:
+* **GPT-4o:** Skupił cały Tier 1 (Pula Silna) w jednym klastrze: `[39, 40, 41, 47, 48, 49]`. Spowodowało to, że niemal każdy wygenerowany zakład miał sumę w granicach 190–220 (najwyższy zakład aż 222), co drastycznie odbiega od optymalnego przedziału sumy dla Lotto (106–194).
+* **Gemini:** Rozbił Tier 1 na dwa przeciwległe bieguny bębna: `[8, 9]` oraz `[47, 48]`. Dzięki temu kupony w kaskadzie naturalnie zrównoważyły wysokie wartości niskimi, dając idealną **100% zgodność z rozkładem sum Gaussa** (sumy kuponów w przedziale 113–183, ze średnią skupioną wokół 150).
+
+### 3. Wnioski wydajnościowo-architektoniczne
+* **Czas wykonania:** Gemini potrzebował 6 tur i łącznie ~18.6 s na operacje LLM (średnio 3.1 s / turę), podczas gdy GPT-4o zamknął się w 3 turach w ~7.7 s. Koszt dodatkowych ~11 sekund przełożył się bezpośrednio na deterministycznie lepszy zbiór danych wejściowych.
+* **Gwarancje kombinatoryczne:** Obie konfiguracje utrzymały 100% pokrycia puli (Zero Drop) oraz identyczny profil gwarancji (100% na 3/6, ~82-84% na 4/6 przy trafieniu 6 liczb z 16 w 20 zakładach), jednak pakiet Gemini nie kanibalizuje się na skrajnych, nienaturalnych sumach.
+* **Architektura Promptu:** W reakcji na te wyniki, w `ReActAgentService` wprowadzono twardą regułę samokorekty w Fazie 3, zakazującą modelom zamykania pętli JSON-em, jeśli narzędzia weryfikacyjne (`evaluate_candidate_pool`, `evaluate_distribution`) wykryją asymetrię rozkładu.
+
+---
+
 ## Pełny przewodnik po komendach CLI
 
 Każda komenda korzystająca z AI przyjmuje opcje `--provider` (skrót `-pv`) oraz `--model` (skrót `-md`).

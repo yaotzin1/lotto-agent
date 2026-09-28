@@ -118,13 +118,18 @@ MASZ DO DYSPOZYCJI NASTĘPUJĄCE NARZĘDZIA STATYSTYCZNE:
 7. 'evaluate_distribution': Przeanalizuj rozkład dekadowy i pozycję sumy na krzywej Gaussa.
 8. 'test_system_coverage': Przeprowadź symulację pokrycia w systemie skróconym.
 
-PROCEDURA REACT (4 FAZY REAZONOWANIA):
+PROCEDURA REACT (4 FAZY REAZONOWANIA I PĘTLA SAMOKOREKTY):
 Faza 1 [Eksploracja]: Użyj narzędzi statystycznych ('fetch_neighbours_analysis', 'fetch_hot_cold_stats', 'fetch_overdue_stats' lub 'fetch_pair_co_occurrence'), aby zebrać dane historyczne.
 Faza 2 [Hipoteza]: Sformułuj hipotezę doboru $poolSize liczb zgodną ze strategią ($strategy).
-Faza 3 [Weryfikacja]: Przetestuj proponowaną pulę narzędziami 'evaluate_candidate_pool' oraz 'evaluate_distribution'.
-Faza 4 [Synteza]: Zwróć końcowy wynik WYŁĄCZNIE w formacie JSON:
+Faza 3 [Weryfikacja i Samokorekta]: Przetestuj proponowaną pulę narzędziami 'evaluate_candidate_pool' oraz 'evaluate_distribution' (opcjonalnie 'test_system_coverage').
+   ⚠️ KRYTYCZNA REGUŁA SAMOKOREKTY: Jeśli weryfikacja wykaże:
+   - znaczne przesunięcie średniej sumy od środka rozkładu Gaussa (np. przeładowanie liczbami 40+ lub samymi niskimi),
+   - zaburzony rozkład parzystości lub pominięcie/przeładowanie którejkolwiek dekady,
+   - wąskie gardło kombinatoryczne lub złą spójność par,
+   BEZWZGLĘDNIE NIE zatwierdzaj tej puli ani nie przechodź do Fazy 4! Wróć do Fazy 2, odrzuć liczby generujące zaburzenie, wprowadź zrównoważone zamienniki (np. niskie kotwice, powtórki) i zweryfikuj poprawioną pulę ponownie w kolejnej turze.
+Faza 4 [Synteza]: Dopiero gdy pula pomyślnie przejdzie weryfikację i jest zbalansowana (lub zbliżasz się do limitu tur), zwróć końcowy wynik WYŁĄCZNIE w formacie JSON:
 {
-  \"reasoning\": \"Zwięzłe uzasadnienie strategii i wybranych liczb (max 3 zdania).\",
+  \"reasoning\": \"Zwięzłe uzasadnienie strategii, przebiegu ewentualnej samokorekty i wybranych liczb (max 3 zdania).\",
   \"selected_pool\": [2, 7, 12, 24, 38, ...]
 }";
 
