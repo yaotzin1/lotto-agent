@@ -88,7 +88,7 @@ class LottoTuiCommand extends Command
         $this->addOption('stride-strategy', null, InputOption::VALUE_REQUIRED, 'Strategia w trybie Stride (anchor_neighbours lub multi_anchor)');
         $this->addOption('anchors', 'a', InputOption::VALUE_REQUIRED, 'Liczba losowań kotwicznych wstecz w trybie Stride (np. 2, 3, 4, domyślnie: auto)');
         $this->addOption('provider', 'pv', InputOption::VALUE_REQUIRED, 'Wybór dostawcy AI: gemini, claude, openai, deepseek');
-        $this->addOption('model', 'md', InputOption::VALUE_REQUIRED, 'Model AI (np. claude-3-7-sonnet-20250219, gpt-4o, gemini-3.7-flash)');
+        $this->addOption('model', 'md', InputOption::VALUE_REQUIRED, 'Model AI (np. gemini-3.8-flash, gemini-2.5-pro, claude-3-7-sonnet-20250219, gpt-4o)');
     }
 
     private function promptSelect(string $question, array $choices, ?string $default = null): string
@@ -231,39 +231,101 @@ class LottoTuiCommand extends Command
 
         $coverDecades = (bool) $input->getOption('cover-decades');
         $poolModeOpt = $input->getOption('pool-mode');
-        if ($poolModeOpt && in_array(strtolower($poolModeOpt), ['ai', 'manual', 'stride', 'decades', 'decade'], true)) {
-            $poolMode = match (strtolower($poolModeOpt)) {
-                'ai' => 'AI',
-                'stride' => 'Stride',
-                'decades', 'decade' => 'Decades',
-                default => 'Manual',
-            };
-        } elseif ($coverDecades && !$poolModeOpt) {
-            $poolMode = 'Decades';
-        } else {
-            $poolMode = $this->promptSelect('Jak chcesz wygenerować pulę wejściową liczb?', [
-                'AI' => 'AI (Na podstawie statystyk LOTTO API)',
-                'Stride' => 'Stride / Kroczenie N (Losowania wstecz co N kroków + sąsiedzi)',
-                'Decades' => 'Dekady (Równomierne pokrycie wszystkich dekad bębna)',
-                'Manual' => 'Ręcznie (Wpisz własne liczby)',
-            ], $coverDecades ? 'Decades' : 'AI');
+        $modeOpt = $input->getOption('mode');
+        $sessions = (int) ($input->getOption('sessions') ?: 50);
+
+        // Pobieramy historię losowań na samym starcie, aby wyświetlić pasek statusu
+        // oraz uniknąć dwukrotnego odpytywania API/dysku w dalszych krokach.
+        $history = $this->historicalDataProvider->fetch($gameType, $sessions);
+        $latestDraw = $this->parseNumbers($input->getOption('latest-draw'));
+        if ($latestDraw === [] && !empty($history['draws'])) {
+            $latestDraw = $history['draws'][0] ?? [];
         }
 
-        $strategyOpt = $input->getOption('strategy');
-        if ($strategyOpt && in_array(strtolower($strategyOpt), ['syndicate', 'balanced', 'aggressive'], true)) {
-            $aiStrategy = strtolower($strategyOpt);
-        } else {
+        // --- BANER STATUSU GRY I OSTATNIEGO LOSOWANIA ---
+        $maxNum = (int) ($game['from'] ?? 49);
+        $extraLabel = (($game['extra'] ?? 0) > 0)
+            ? sprintf(' + %d z %d', (int) $game['extra'], (int) $game['extra_from'])
+            : '';
+        $latestDrawStr = $latestDraw !== []
+            ? implode(', ', $latestDraw)
+            : 'Brak w lokalnym archiwum (uruchom app:lotto-archive)';
+        $drawsLoadedCount = count($history['draws'] ?? []);
+
+        $io->table(
+            ['Parametr Gry', 'Status'],
+            [
+                ['Wybrana gra', sprintf('<fg=yellow;options=bold>%s</> (%d z %d%s)', $gameType, (int) $game['pick'], $maxNum, $extraLabel)],
+                ['Ostatnie losowanie (Kotwice)', sprintf('<fg=cyan;options=bold>[%s]</>', $latestDrawStr)],
+                ['Załadowana historia losowań', sprintf('%d sesji %s', $drawsLoadedCount, $drawsLoadedCount >= 20 ? '<fg=green>[OK - Aktywna Synergia EMA Par i Trójek]</>' : '<fg=yellow>[Mało danych - Tryb Heurystyczny]</>')],
+            ]
+        );
+
+        // --- 1-CLICK SZYBKIE PROFILE GRY (QUICK-START PRESETS) ---
+        $selectedPreset = 'custom';
+        if (!$poolModeOpt && !$modeOpt && !$coverDecades && $input->isInteractive()) {
+            $selectedPreset = $this->promptSelect('Wybierz Szybki Profil Gry (Quick-Start) lub Konfigurację Zaawansowaną:', [
+                'preset_syndicate_ai' => '🔥 Szybki Syndykat AI + Kaskada Sąsiadów (Gemini 3.8 + Tryb [9] — Rekomendowany)',
+                'preset_zero_drop' => '🎯 Pełny Bęben Zero-Drop (100% liczb bębna + Tryb [9] Kaskada Sąsiadów)',
+                'preset_wheeling' => '📐 System Skrócony Wheeling (t-Design Set-Cover — Zawężona pula + Gwarancja 3/k i 4/k)',
+                'custom' => '⚙️  Konfiguracja Zaawansowana (Kreator krok po kroku — pełna kontrola wszystkich opcji)',
+            ], 'preset_syndicate_ai');
+        }
+
+        $presetPoolSize = null;
+        $presetMode = null;
+
+        if ($selectedPreset === 'preset_syndicate_ai') {
+            $poolMode = 'AI';
             $aiStrategy = 'syndicate';
-            if ($poolMode === 'AI') {
-                $aiStrategy = $this->promptSelect('Wybierz strategię doboru liczb przez AI:', [
-                    'syndicate' => 'Syndykat Klastrowy (60% sąsiedzi, 20% powtórki wygranych, 20% uśpione)',
-                    'balanced' => 'Zbalansowana (Klasyczna Hybryda, równowaga)',
-                    'aggressive' => 'Ostra Gra (Łowca Trendów - maks. ryzyko na klastry i liczby gorące)',
-                ], 'syndicate');
+            $includeNeighbours = true;
+            $presetPoolSize = min($maxNum, max((int) $game['pick'] * 3, 20));
+            $presetMode = '9';
+        } elseif ($selectedPreset === 'preset_zero_drop') {
+            $poolMode = 'Manual';
+            $includeNeighbours = true;
+            $presetMode = '9';
+        } elseif ($selectedPreset === 'preset_wheeling') {
+            $poolMode = 'Decades';
+            $includeNeighbours = true;
+            $presetPoolSize = min($maxNum, max((int) $game['pick'] + 4, (int) $game['pick'] * 2 + 2));
+            $presetMode = '1';
+        } else {
+            if ($poolModeOpt && in_array(strtolower($poolModeOpt), ['ai', 'manual', 'stride', 'decades', 'decade'], true)) {
+                $poolMode = match (strtolower($poolModeOpt)) {
+                    'ai' => 'AI',
+                    'stride' => 'Stride',
+                    'decades', 'decade' => 'Decades',
+                    default => 'Manual',
+                };
+            } elseif ($coverDecades && !$poolModeOpt) {
+                $poolMode = 'Decades';
+            } else {
+                $poolMode = $this->promptSelect('Jak chcesz wygenerować pulę wejściową liczb?', [
+                    'AI' => 'AI (Na podstawie statystyk LOTTO API i ReAct Agent)',
+                    'Stride' => 'Stride / Kroczenie N (Losowania wstecz co N kroków + sąsiedzi)',
+                    'Decades' => 'Dekady (Równomierne pokrycie wszystkich dekad bębna)',
+                    'Manual' => 'Ręcznie (Wpisz własne liczby lub wybierz cały bęben "all")',
+                ], $coverDecades ? 'Decades' : 'AI');
             }
+
+            $strategyOpt = $input->getOption('strategy');
+            if ($strategyOpt && in_array(strtolower($strategyOpt), ['syndicate', 'balanced', 'aggressive'], true)) {
+                $aiStrategy = strtolower($strategyOpt);
+            } else {
+                $aiStrategy = 'syndicate';
+                if ($poolMode === 'AI') {
+                    $aiStrategy = $this->promptSelect('Wybierz strategię doboru liczb przez AI:', [
+                        'syndicate' => 'Syndykat Klastrowy (60% sąsiedzi, 20% powtórki wygranych, 20% uśpione)',
+                        'balanced' => 'Zbalansowana (Klasyczna Hybryda, równowaga)',
+                        'aggressive' => 'Ostra Gra (Łowca Trendów - maks. ryzyko na klastry i liczby gorące)',
+                    ], 'syndicate');
+                }
+            }
+
+            $includeNeighbours = (bool) ($input->getOption('with-neighbours') || $input->getOption('neighbours'));
         }
 
-        $includeNeighbours = (bool) ($input->getOption('with-neighbours') || $input->getOption('neighbours'));
         $neighboursRatio = $this->parseRatio((string) $input->getOption('neighbours-ratio'));
 
         $fullPool = [];
@@ -272,11 +334,41 @@ class LottoTuiCommand extends Command
             $poolSizeOpt = $input->getOption('pool-size');
             if ($poolSizeOpt && is_numeric($poolSizeOpt) && (int)$poolSizeOpt >= $game['pick']) {
                 $poolSize = (int)$poolSizeOpt;
+            } elseif ($presetPoolSize !== null) {
+                $poolSize = (int) $this->promptInput(
+                    "Ile liczb ma wybrać AI do puli? (dla gry {$gameType} losujemy {$game['pick']} z {$game['from']})",
+                    (string) $presetPoolSize
+                );
             } else {
                 $poolSize = (int)$this->promptInput("Ile liczb ma wybrać AI? (dla gry {$gameType} losujemy {$game['pick']} z {$game['from']})", '20');
             }
 
-            $io->text("Uruchamianie ReAct Agent AI (Gemini + Narzędzia Statystyczne OpenAPI)...");
+            $providerOpt = $input->getOption('provider');
+            $modelOpt = $input->getOption('model');
+
+            if (!$providerOpt && !$modelOpt && $input->isInteractive()) {
+                $aiChoice = $this->promptSelect('Wybierz silnik i model AI do analizy ReAct:', [
+                    'gemini:gemini-3.8-flash' => '⚡ Google Gemini 3.8 Flash (Domyślny — szybka pętla narzędziowa ReAct)',
+                    'gemini:gemini-3.7-flash' => '🚀 Google Gemini 3.7 Flash (Alternatywny szybki model ReAct)',
+                    'gemini:gemini-2.5-pro' => '🧠 Google Gemini 2.5 Pro (Głębokie wnioskowanie matematyczne i kombinatoryczne)',
+                    'gemini:gemini-3.1-pro-preview' => '🔬 Google Gemini 3.1 Pro Preview (Eksperymentalny model Pro)',
+                    'claude:claude-3-7-sonnet-20250219' => '🤖 Anthropic Claude 3.7 Sonnet (Wymaga ANTHROPIC_API_KEY)',
+                    'openai:gpt-4o' => '🌐 OpenAI GPT-4o (Wymaga OPENAI_API_KEY)',
+                    'deepseek:deepseek-reasoner' => '📐 DeepSeek-R1 Reasoner CoT (Wymaga DEEPSEEK_API_KEY)',
+                ], 'gemini:gemini-3.8-flash');
+
+                [$providerOpt, $modelOpt] = explode(':', $aiChoice, 2);
+            }
+
+            if ($selectedPreset === 'custom' && !$input->hasParameterOption('--with-neighbours') && !$input->hasParameterOption('--neighbours') && !$input->hasParameterOption('-wn') && !$input->hasParameterOption('-nb') && $input->isInteractive()) {
+                $includeNeighbours = $this->promptConfirm('Czy włączyć analizę sąsiadów (±1 wokół ostatnich kotwic) w pętli AI?', true);
+            }
+
+            $io->text(sprintf(
+                'Uruchamianie ReAct Agent AI (<fg=cyan>%s / %s</> + Narzędzia Statystyczne)...',
+                $providerOpt ?: 'gemini',
+                $modelOpt ?: 'gemini-3.8-flash'
+            ));
 
             $onStepCallback = function (string $type, array $data) use ($io): void {
                 if ($type === 'tool_call') {
@@ -292,21 +384,19 @@ class LottoTuiCommand extends Command
                     ));
                 } elseif ($type === 'thinking') {
                     $io->text(sprintf(
-                        "🧠 <fg=gray>[Agent Thinking]</fg=gray> Tura %d: Gemini przetwarza obserwacje...",
+                        "🧠 <fg=gray>[Agent Thinking]</fg=gray> Tura %d: Model AI przetwarza obserwacje...",
                         $data['turn']
                     ));
                 }
             };
 
             $sessionsOpt = $input->getOption('sessions');
-            $sessions = $sessionsOpt !== null && is_numeric($sessionsOpt) ? (int)$sessionsOpt : null;
+            $aiSessions = $sessionsOpt !== null && is_numeric($sessionsOpt) ? (int)$sessionsOpt : null;
 
             $monthsOpt = $input->getOption('months');
             $months = $monthsOpt !== null && is_numeric($monthsOpt) ? (int)$monthsOpt : null;
 
-            $providerOpt = $input->getOption('provider');
-            $modelOpt = $input->getOption('model');
-            $result = $this->reactAgentService->runAgentLoop($gameType, $poolSize, $aiStrategy, $onStepCallback, $sessions, $months, $includeNeighbours, $coverDecades, $providerOpt, $modelOpt);
+            $result = $this->reactAgentService->runAgentLoop($gameType, $poolSize, $aiStrategy, $onStepCallback, $aiSessions, $months, $includeNeighbours, $coverDecades, $providerOpt, $modelOpt);
             $fullPool = $result['pool'] ?? $result['selected_pool'] ?? [];
             sort($fullPool);
 
@@ -364,9 +454,6 @@ class LottoTuiCommand extends Command
                 }
             }
 
-            // Archiwum domykamy z oficjalnego LOTTO OpenAPI przed zbudowaniem puli:
-            // kotwice adresują losowania pozycją, więc brakujące losowanie
-            // przesuwa je wszystkie.
             $refresh = $this->strideService->refreshArchive($gameType);
             if ($refresh !== null) {
                 if ($refresh['added'] > 0) {
@@ -415,9 +502,8 @@ class LottoTuiCommand extends Command
                 return Command::FAILURE;
             }
         } elseif ($poolMode === 'Decades') {
-            $maxNum = $game['from'] ?? 49;
             $decadesCount = (int) ceil($maxNum / 10);
-            $defaultPoolSize = (string) min($maxNum, max($game['pick'], 3 * $decadesCount));
+            $defaultPoolSize = (string) ($presetPoolSize ?? min($maxNum, max($game['pick'], 3 * $decadesCount)));
 
             $poolSizeOpt = $input->getOption('pool-size');
             if ($poolSizeOpt && is_numeric($poolSizeOpt) && (int) $poolSizeOpt >= $game['pick']) {
@@ -430,14 +516,12 @@ class LottoTuiCommand extends Command
             }
             $poolSize = max($game['pick'], min($maxNum, $poolSize));
 
-            $sessions = (int) ($input->getOption('sessions') ?: 50);
-            $history = $this->historicalDataProvider->fetch($gameType, $sessions);
             $frequencies = $history['frequencies'] ?? [];
 
             $stratOpt = $input->getOption('decade-strategy');
             if ($stratOpt && in_array($stratOpt, ['hot', 'balanced', 'random'], true)) {
                 $decadeStrategy = (string) $stratOpt;
-            } elseif ($input->isInteractive()) {
+            } elseif ($selectedPreset === 'custom' && $input->isInteractive()) {
                 $decadeStrategy = $this->promptSelect('Wybierz strategię wyboru liczb wewnątrz dekad:', [
                     'hot' => 'Gorące (najczęstsze liczby w historii dla danej dekady)',
                     'balanced' => 'Zbalansowana (60% gorące, 40% zimne)',
@@ -447,14 +531,12 @@ class LottoTuiCommand extends Command
                 $decadeStrategy = 'hot';
             }
 
-            if (!$input->hasParameterOption('--with-neighbours') && !$input->hasParameterOption('--neighbours') && !$input->hasParameterOption('-wn') && !$input->hasParameterOption('-nb') && $input->isInteractive()) {
+            if ($selectedPreset === 'custom' && !$input->hasParameterOption('--with-neighbours') && !$input->hasParameterOption('--neighbours') && !$input->hasParameterOption('-wn') && !$input->hasParameterOption('-nb') && $input->isInteractive()) {
                 $includeNeighbours = $this->promptSelect('Czy uwzględnić w dekadach sąsiadów (±1) z ostatniego losowania?', [
                     'yes' => 'Tak - priorytetyzuj sąsiadów ±1 w dekadach',
                     'no' => 'Nie - czysta strategia częstotliwościowa',
                 ], 'no') === 'yes';
             }
-
-            $latestDraw = $history['draws'][0] ?? [];
 
             $decadeResult = $this->decadeDistributionService->generateDecadePool(
                 $maxNum,
@@ -498,21 +580,24 @@ class LottoTuiCommand extends Command
             ));
         } else {
             $poolOpt = $input->getOption('pool');
-            $maxNum = $game['from'] ?? 49;
 
-            if ($poolOpt !== null && strtolower(trim((string) $poolOpt)) === 'all') {
+            if ($selectedPreset === 'preset_zero_drop' || ($poolOpt !== null && strtolower(trim((string) $poolOpt)) === 'all')) {
                 $fullPool = range(1, $maxNum);
             } else {
                 $poolStr = ($poolOpt !== null && $poolOpt !== '')
                     ? (string) $poolOpt
-                    : (string) $this->promptInput('Podaj pulę liczb oddzielonych spacją lub przecinkiem (np. 1 5 12 18):');
-                preg_match_all('/\d+/', $poolStr, $matches);
-                $fullPool = array_values(array_unique(array_map('intval', $matches[0] ?? [])));
+                    : (string) $this->promptInput('Podaj pulę liczb oddzielonych spacją/przecinkiem lub wpisz "all" dla całego bębna:', 'all');
+                if (strtolower(trim($poolStr)) === 'all') {
+                    $fullPool = range(1, $maxNum);
+                } else {
+                    preg_match_all('/\d+/', $poolStr, $matches);
+                    $fullPool = array_values(array_unique(array_map('intval', $matches[0] ?? [])));
+                }
             }
 
             $fullPool = array_values(array_filter($fullPool, static fn(int $n): bool => $n >= 1 && $n <= $maxNum));
             sort($fullPool);
-            $io->success("Pula ręczna: " . implode(', ', $fullPool));
+            $io->success(sprintf('Pula wejściowa (%d liczb): %s', count($fullPool), implode(', ', $fullPool)));
         }
 
         if (count($fullPool) < $game['pick']) {
@@ -520,20 +605,21 @@ class LottoTuiCommand extends Command
             return Command::FAILURE;
         }
 
-        $modeOpt = $input->getOption('mode');
         if ($modeOpt && in_array((string)$modeOpt, ['1', '2', '3', '4', '5', '6', '7', '8', '9'], true)) {
             $mode = (string)$modeOpt;
+        } elseif ($presetMode !== null) {
+            $mode = $presetMode;
         } else {
             $io->section("METODA PRACY (Generator)");
             $mode = $this->promptSelect('Wybierz tryb:', [
-                '1' => '[1] RĘCZNY (Jeden blok = Pula wejściowa)',
+                '1' => '[1] SYSTEM SKRÓCONY WHEELING (t-Design Set-Cover + Bucket Balance)',
                 '2' => '[2] KREATOR BLOKÓW (Inteligentny Krupier)',
                 '3' => '[3] GENERATOR WAŻONY (Statystyczny)',
                 '4' => '[4] SYSTEM HYBRYDOWY (Stali Bankierzy + Zmienne z Puli)',
                 '5' => '[5] SYSTEM FRAKTALNY (Zaawansowane bloki)',
                 '6' => '[6] SYSTEM ROZDZIELNY (Bankierzy Rotacyjni)',
-                '7' => '[7] OPTYMALIZACJA STATYSTYCZNA (Synergia Par/Trójek - Tryb Hot)',
-                '8' => '[8] RANKINGOWE PEŁNE POKRYCIE (Synergia Par + Gwarancja 100% Puli)',
+                '7' => '[7] OPTYMALIZACJA STATYSTYCZNA (Synergia Par/Trójek EMA - Tryb Hot)',
+                '8' => '[8] RANKINGOWE PEŁNE POKRYCIE (Synergia Par/Trójek + Gwarancja 100% Puli)',
                 '9' => '[9] KASKADOWY SYSTEM SĄSIADÓW (Warstwy Siły: Sąsiedzi -> Bufor -> Pełne Pokrycie)',
             ], '9');
         }
@@ -541,27 +627,20 @@ class LottoTuiCommand extends Command
         // Ile kuponow LACZNIE (nie na blok - patrz finding B1 w docs/REVIEW.md).
         $betsTotal = (int) ($input->getOption('bets') ?: 0);
         if ($betsTotal < 1) {
+            $baseZeroDropBets = (int) ceil(count($fullPool) / max(1, (int) $game['pick']));
             $default = in_array($mode, ['7', '8', '9'], true)
-                ? (count($fullPool) >= 40 ? '100' : '25')
-                : '10';
+                ? (string) max($baseZeroDropBets * 2, (count($fullPool) >= 40 ? 25 : 15))
+                : '12';
             $betsTotal = (int) ($input->isInteractive()
-                ? $this->promptInput('Ile zakladow wygenerowac LACZNIE?', $default)
+                ? $this->promptInput(sprintf('Ile zakładów wygenerować ŁĄCZNIE? (min. %d dla 100%% pokrycia puli)', $baseZeroDropBets), $default)
                 : $default);
         }
 
-        $sessions = (int) ($input->getOption('sessions') ?: 50);
-        $history = $this->historicalDataProvider->fetch($gameType, $sessions);
-
         if (!$history['ok']) {
             $io->warning($history['warning']);
-            $io->note('Kupony zostana wygenerowane, ale bez warstwy statystycznej: wszystkie liczby sa traktowane jednakowo.');
+            $io->note('Kupony zostaną wygenerowane, ale bez warstwy statystycznej: wszystkie liczby są traktowane jednakowo.');
         } elseif ($history['warning'] !== null) {
             $io->note($history['warning']);
-        }
-
-        $latestDraw = $this->parseNumbers($input->getOption('latest-draw'));
-        if (empty($latestDraw) && !empty($history['draws'])) {
-            $latestDraw = $history['draws'][0] ?? [];
         }
 
         $gameForPipeline = $game;
@@ -589,122 +668,280 @@ class LottoTuiCommand extends Command
             return (int) $raw;
         };
 
-        $request = new BetPipelineRequest(
-            game: $gameForPipeline,
-            pool: $fullPool,
-            mode: $mode,
-            betsTotal: $betsTotal,
-            frequencies: $history['frequencies'],
-            draws: $history['draws'],
-            bankers: in_array($mode, ['4', '6'], true)
-                ? $askNumbers('bankers', 'Wpisz liczby BANKIEROW z puli:')
-                : [],
-            bankersPerBet: $mode === '6' ? $askInt('bankers-per-bet', 'Ilu Bankierow na kazdym kuponie?', '3') : 3,
-            l1Size: $mode === '5' ? $askInt('l1-size', 'Rozmiar Bloku L1:', '12') : 12,
-            l1Count: $mode === '5' ? $askInt('l1-count', 'Ile Blokow L1:', '4') : 4,
-            l2Size: $mode === '5' ? $askInt('l2-size', 'Rozmiar Bloku L2:', '8') : 8,
-            l2Count: $mode === '5' ? $askInt('l2-count', 'Ile podblokow L2:', '2') : 2,
-            blockSize: $mode === '2' ? $askInt('block-size', 'Rozmiar bloku:', '12') : 12,
-            blockCount: $mode === '2' ? $askInt('block-count', 'Ile blokow:', '5') : 5,
-            hotNumbers: $mode === '3' ? $askNumbers('hot', 'Wpisz liczby GORACE (wieksza waga):') : [],
-            weight: $mode === '3' ? $askInt('weight', 'Waga (2-10):', '5') : 5,
-            coverDecades: $coverDecades || $poolMode === 'Decades',
-            withNeighbours: $includeNeighbours,
-            neighboursRatio: $neighboursRatio,
-            latestDraw: $latestDraw,
-        );
+        while (true) {
+            $request = new BetPipelineRequest(
+                game: $gameForPipeline,
+                pool: $fullPool,
+                mode: $mode,
+                betsTotal: $betsTotal,
+                frequencies: $history['frequencies'],
+                draws: $history['draws'],
+                bankers: in_array($mode, ['4', '6'], true)
+                    ? $askNumbers('bankers', 'Wpisz liczby BANKIERÓW z puli:')
+                    : [],
+                bankersPerBet: $mode === '6' ? $askInt('bankers-per-bet', 'Ilu Bankierów na każdym kuponie?', '3') : 3,
+                l1Size: $mode === '5' ? $askInt('l1-size', 'Rozmiar Bloku L1:', '12') : 12,
+                l1Count: $mode === '5' ? $askInt('l1-count', 'Ile Bloków L1:', '4') : 4,
+                l2Size: $mode === '5' ? $askInt('l2-size', 'Rozmiar Bloku L2:', '8') : 8,
+                l2Count: $mode === '5' ? $askInt('l2-count', 'Ile podbloków L2:', '2') : 2,
+                blockSize: $mode === '2' ? $askInt('block-size', 'Rozmiar bloku:', '12') : 12,
+                blockCount: $mode === '2' ? $askInt('block-count', 'Ile bloków:', '5') : 5,
+                hotNumbers: $mode === '3' ? $askNumbers('hot', 'Wpisz liczby GORĄCE (większa waga):') : [],
+                weight: $mode === '3' ? $askInt('weight', 'Waga (2-10):', '5') : 5,
+                coverDecades: $coverDecades || $poolMode === 'Decades',
+                withNeighbours: $includeNeighbours,
+                neighboursRatio: $neighboursRatio,
+                latestDraw: $latestDraw,
+            );
 
-        $io->text('Generowanie pakietu (tryb ' . $mode . ')...');
-
-        try {
-            $pipelineResult = $this->betPipeline->run($request);
-        } catch (\InvalidArgumentException $e) {
-            $io->error($e->getMessage());
-
-            return Command::FAILURE;
-        }
-
-        $allFinalBets = $pipelineResult->bets;
-        $statsReport = $pipelineResult->statsReport;
-        $extraSets = $pipelineResult->extraSets;
-        $extraInfo = $pipelineResult->extraInfo;
-
-        $io->success("Wygenerowano " . count($allFinalBets) . " zakładów!");
-
-        if ($extraInfo !== null) {
-            $io->text(sprintf(
-                'Liczby dodatkowe: %d z %d — %d różnych zestawów z %d możliwych (źródło: %s).',
-                (int) $game['extra'],
-                (int) $game['extra_from'],
-                $extraInfo['distinct_sets'],
-                $extraInfo['total_possible'],
-                $extraInfo['source'] === 'historical_co_occurrence'
-                    ? 'rzeczywiste współwystępowanie'
-                    : 'heurystyka częstotliwościowa'
-            ));
-        }
-
-        foreach ($pipelineResult->warnings as $warning) {
-            $io->warning($warning);
-        }
-
-        $this->statsWindowRenderer->renderBets(
-            $io,
-            $allFinalBets,
-            $extraSets,
-            $statsReport,
-            (int) ($input->getOption('max-rows') ?: StatsWindowRenderer::SHOW_ALL)
-        );
-
-        if ($statsReport !== null) {
-            $this->statsWindowRenderer->renderStatsWindow($io, $statsReport, count($fullPool));
-        }
-
-        // --- WERYFIKATOR POKRYCIA ---
-        $io->section("ANALIZA POKRYCIA (Macierz Gwarancji: Siatka Bezpieczeństwa)");
-
-        if (count($fullPool) <= 30) {
-            $io->text("Symulacja możliwych scenariuszy losowania...");
+            $io->text('Generowanie pakietu (tryb ' . $mode . ')...');
 
             try {
-                $scenarios = [
-                    $game['pick'],
-                    $game['pick'] - 1,
-                    $game['pick'] - 2,
-                ];
+                $pipelineResult = $this->betPipeline->run($request);
+            } catch (\InvalidArgumentException $e) {
+                $io->error($e->getMessage());
 
-                foreach ($scenarios as $hitsInPool) {
-                    if ($hitsInPool < 3 || $hitsInPool <= 0) {
-                        continue;
-                    }
-
-                    $coverage = $this->generatorService->calculateCoverage($fullPool, $allFinalBets, $hitsInPool);
-
-                    $io->text("<fg=cyan>Scenariusz:</> W Twojej puli znalazło się dokładnie <fg=white;options=bold>{$hitsInPool}</> z wylosowanych liczb.");
-                    $covData = [];
-                    for ($i = 3; $i <= $hitsInPool; $i++) {
-                        $percent = $coverage['guarantees'][$i];
-                        $format = $percent == 100 ? '<fg=green;options=bold>%s%%</>' : ($percent > 50 ? '<fg=yellow>%s%%</>' : '%s%%');
-                        $covData[] = [
-                            "Gwarancja $i/" . $game['pick'],
-                            sprintf($format, $percent),
-                        ];
-                    }
-
-                    $io->table(['Cel', 'Szansa na przynajmniej 1 taki kupon'], $covData);
-                }
-
-                if (isset($scenarios[0])) {
-                    $totalCoverage = $this->generatorService->calculateCoverage($fullPool, $allFinalBets, $scenarios[0]);
-                    $io->text("<fg=gray>Przeanalizowano " . number_format($totalCoverage['total_draws'], 0, ',', ' ') . " bazowych kombinacji dla pełnego trafienia w pulę.</>");
-                }
-            } catch (\Exception $e) {
-                $io->warning("Nie udało się przeprowadzić symulacji: " . $e->getMessage());
+                return Command::FAILURE;
             }
-        } else {
-            $io->warning("Pula jest zbyt duża (" . count($fullPool) . " liczb) na pełną symulację kombinatoryczną w czasie rzeczywistym.");
+
+            $allFinalBets = $pipelineResult->bets;
+            $statsReport = $pipelineResult->statsReport;
+            $extraSets = $pipelineResult->extraSets;
+            $extraInfo = $pipelineResult->extraInfo;
+
+            $io->success("Wygenerowano " . count($allFinalBets) . " zakładów!");
+
+            if ($extraInfo !== null) {
+                $io->text(sprintf(
+                    'Liczby dodatkowe: %d z %d — %d różnych zestawów z %d możliwych (źródło: %s).',
+                    (int) $game['extra'],
+                    (int) $game['extra_from'],
+                    $extraInfo['distinct_sets'],
+                    $extraInfo['total_possible'],
+                    $extraInfo['source'] === 'historical_co_occurrence'
+                        ? 'rzeczywiste współwystępowanie'
+                        : 'heurystyka częstotliwościowa'
+                ));
+            }
+
+            foreach ($pipelineResult->warnings as $warning) {
+                $io->warning($warning);
+            }
+
+            $this->statsWindowRenderer->renderBets(
+                $io,
+                $allFinalBets,
+                $extraSets,
+                $statsReport,
+                (int) ($input->getOption('max-rows') ?: StatsWindowRenderer::SHOW_ALL)
+            );
+
+            // --- WIZUALNA MAPA BĘBNA (HEATMAPA 1..N) ---
+            $this->statsWindowRenderer->renderDrumHeatmap(
+                $io,
+                $allFinalBets,
+                $fullPool,
+                $maxNum,
+                $latestDraw
+            );
+
+            if ($statsReport !== null) {
+                $this->statsWindowRenderer->renderStatsWindow($io, $statsReport, count($fullPool));
+            }
+
+            // --- WERYFIKATOR POKRYCIA ---
+            $io->section("ANALIZA POKRYCIA (Macierz Gwarancji: Siatka Bezpieczeństwa)");
+
+            if (count($fullPool) <= 30) {
+                $io->text("Symulacja możliwych scenariuszy losowania...");
+
+                try {
+                    $scenarios = [
+                        $game['pick'],
+                        $game['pick'] - 1,
+                        $game['pick'] - 2,
+                    ];
+
+                    foreach ($scenarios as $hitsInPool) {
+                        if ($hitsInPool < 3 || $hitsInPool <= 0) {
+                            continue;
+                        }
+
+                        $coverage = $this->generatorService->calculateCoverage($fullPool, $allFinalBets, $hitsInPool);
+
+                        $io->text("<fg=cyan>Scenariusz:</> W Twojej puli znalazło się dokładnie <fg=white;options=bold>{$hitsInPool}</> z wylosowanych liczb.");
+                        $covData = [];
+                        for ($i = 3; $i <= $hitsInPool; $i++) {
+                            $percent = $coverage['guarantees'][$i];
+                            $format = $percent == 100 ? '<fg=green;options=bold>%s%%</>' : ($percent > 50 ? '<fg=yellow>%s%%</>' : '%s%%');
+                            $covData[] = [
+                                "Gwarancja $i/" . $game['pick'],
+                                sprintf($format, $percent),
+                            ];
+                        }
+
+                        $io->table(['Cel', 'Szansa na przynajmniej 1 taki kupon'], $covData);
+                    }
+
+                    if (isset($scenarios[0])) {
+                        $totalCoverage = $this->generatorService->calculateCoverage($fullPool, $allFinalBets, $scenarios[0]);
+                        $io->text("<fg=gray>Przeanalizowano " . number_format($totalCoverage['total_draws'], 0, ',', ' ') . " bazowych kombinacji dla pełnego trafienia w pulę.</>");
+                    }
+                } catch (\Exception $e) {
+                    $io->warning("Nie udało się przeprowadzić symulacji: " . $e->getMessage());
+                }
+            } else {
+                $io->warning("Pula jest zbyt duża (" . count($fullPool) . " liczb) na pełną symulację kombinatoryczną w czasie rzeczywistym.");
+            }
+
+            if (!$input->isInteractive()) {
+                break;
+            }
+
+            // --- INTERAKTYWNE MENU PO WYGENEROWANIU KUPONÓW ---
+            while (true) {
+                $postAction = $this->promptSelect('Co chcesz zrobić dalej z wygenerowanym pakietem?', [
+                    'finish' => '🚪 Zakończ pracę generatora',
+                    'export' => '💾 Zapisz kupony do pliku (TXT / CSV / JSON w var/exports/)',
+                    'deep_stats' => '📈 Pokaż szczegółowy rozkład Gaussa, Top Pary, Trójki (3-Cliques) i pokrycie t-Design',
+                    'rerun_mode' => '🔄 Przelicz tę samą pulę w innym trybie (np. porównaj Tryb 9, 8, 7, 1)',
+                ], 'finish');
+
+                if ($postAction === 'finish') {
+                    return Command::SUCCESS;
+                }
+
+                if ($postAction === 'export') {
+                    $format = $this->promptSelect('Wybierz format eksportu kuponów:', [
+                        'txt' => '📄 TXT (Czytelny arkusz do przepisania na blankiety)',
+                        'csv' => '📊 CSV (Arkusz kalkulacyjny Excel / LibreOffice)',
+                        'json' => '🧩 JSON (Pełny zrzut danych ze statystykami)',
+                    ], 'txt');
+
+                    $exportPath = $this->exportGeneratedBets($gameType, $mode, $fullPool, $allFinalBets, $extraSets, $statsReport, $format);
+                    $io->success(sprintf('Zapisano %d zakładów do pliku: %s', count($allFinalBets), $exportPath));
+                    continue;
+                }
+
+                if ($postAction === 'deep_stats') {
+                    $subsetsCov = $this->generatorService->calculateSubsetsCoverage($fullPool, $allFinalBets);
+                    $this->statsWindowRenderer->renderDeepSynergyAndGaussianDetails($io, $statsReport, $subsetsCov);
+                    continue;
+                }
+
+                if ($postAction === 'rerun_mode') {
+                    $mode = $this->promptSelect('Wybierz nowy tryb generatora dla tej samej puli (' . count($fullPool) . ' liczb):', [
+                        '9' => '[9] KASKADOWY SYSTEM SĄSIADÓW (Warstwy Siły: Sąsiedzi -> Bufor -> Pełne Pokrycie)',
+                        '8' => '[8] RANKINGOWE PEŁNE POKRYCIE (Synergia Par/Trójek + Gwarancja 100% Puli)',
+                        '7' => '[7] OPTYMALIZACJA STATYSTYCZNA (Synergia Par/Trójek EMA - Tryb Hot)',
+                        '1' => '[1] SYSTEM SKRÓCONY WHEELING (t-Design Set-Cover + Bucket Balance)',
+                        '2' => '[2] KREATOR BLOKÓW (Inteligentny Krupier)',
+                        '3' => '[3] GENERATOR WAŻONY (Statystyczny)',
+                        '4' => '[4] SYSTEM HYBRYDOWY (Stali Bankierzy + Zmienne z Puli)',
+                        '5' => '[5] SYSTEM FRAKTALNY (Zaawansowane bloki)',
+                        '6' => '[6] SYSTEM ROZDZIELNY (Bankierzy Rotacyjni)',
+                    ], $mode);
+
+                    $betsTotal = (int) $this->promptInput('Ile zakładów wygenerować w nowym trybie?', (string) $betsTotal);
+                    break; // Wróć do pętli głównej generowania z nowym trybem!
+                }
+            }
         }
 
         return Command::SUCCESS;
+    }
+
+    /**
+     * Eksportuje wygenerowany pakiet kuponów do pliku w katalogu var/exports/.
+     *
+     * @param array<int> $pool
+     * @param array<int, array<int>> $bets
+     * @param array<int, array<int>> $extraSets
+     * @param array<string, mixed>|null $statsReport
+     */
+    private function exportGeneratedBets(
+        string $gameType,
+        string $mode,
+        array $pool,
+        array $bets,
+        array $extraSets,
+        ?array $statsReport,
+        string $format
+    ): string {
+        $exportDir = dirname(__DIR__, 2) . '/var/exports';
+        if (!is_dir($exportDir)) {
+            @mkdir($exportDir, 0775, true);
+        }
+
+        $timestamp = date('Y-m-d_His');
+        $safeGame = preg_replace('/[^a-zA-Z0-9_-]/', '', $gameType) ?: 'Lotto';
+        $filename = sprintf('%s/kupony_%s_tryb%s_%s.%s', $exportDir, $safeGame, $mode, $timestamp, $format);
+
+        if ($format === 'json') {
+            $payload = [
+                'generated_at' => date(DATE_ATOM),
+                'game' => $gameType,
+                'mode' => $mode,
+                'pool_size' => count($pool),
+                'pool' => $pool,
+                'bets_count' => count($bets),
+                'bets' => $bets,
+                'extra_sets' => $extraSets,
+                'stats_summary' => $statsReport !== null ? [
+                    'unique_numbers_used' => $statsReport['unique_numbers_used'] ?? count($pool),
+                    'pool_coverage_pct' => $statsReport['pool_coverage_pct'] ?? 100.0,
+                    'pairs_coverage_pct' => $statsReport['pairs_coverage_pct'] ?? 0.0,
+                    'top_pairs' => $statsReport['top_pairs'] ?? [],
+                    'top_triplets' => $statsReport['top_triplets'] ?? [],
+                ] : null,
+            ];
+            file_put_contents($filename, json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+
+            return $filename;
+        }
+
+        if ($format === 'csv') {
+            $lines = ['Nr;Liczby_Glowne;Liczby_Dodatkowe;Suma'];
+            foreach ($bets as $idx => $bet) {
+                $extraStr = isset($extraSets[$idx]) && $extraSets[$idx] !== []
+                    ? implode(' ', $extraSets[$idx])
+                    : '';
+                $lines[] = sprintf(
+                    '%d;"%s";"%s";%d',
+                    $idx + 1,
+                    implode(', ', $bet),
+                    $extraStr,
+                    array_sum($bet)
+                );
+            }
+            file_put_contents($filename, implode(PHP_EOL, $lines) . PHP_EOL);
+
+            return $filename;
+        }
+
+        // Domyślny format TXT
+        $lines = [
+            '==============================================================',
+            sprintf(' PAKIET KUPONÓW LOTTO AGENT — GRA: %s (TRYB %s)', strtoupper($gameType), $mode),
+            sprintf(' Data wygenerowania: %s', date('Y-m-d H:i:s')),
+            sprintf(' Pula wejściowa (%d liczb): %s', count($pool), implode(', ', $pool)),
+            sprintf(' Liczba zakładów: %d', count($bets)),
+            '==============================================================',
+            '',
+        ];
+
+        foreach ($bets as $idx => $bet) {
+            $numsFormatted = implode(', ', array_map(static fn(int $n): string => sprintf('%2d', $n), $bet));
+            $extraStr = isset($extraSets[$idx]) && $extraSets[$idx] !== []
+                ? sprintf('  + [%s]', implode(', ', $extraSets[$idx]))
+                : '';
+            $lines[] = sprintf('Zakład #%03d:  %s%s   (Suma: %d)', $idx + 1, $numsFormatted, $extraStr, array_sum($bet));
+        }
+
+        $lines[] = '';
+        $lines[] = '==============================================================';
+        file_put_contents($filename, implode(PHP_EOL, $lines) . PHP_EOL);
+
+        return $filename;
     }
 }

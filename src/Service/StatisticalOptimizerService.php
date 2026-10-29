@@ -244,11 +244,15 @@ class StatisticalOptimizerService
     }
 
     /**
-     * Zlicza rzeczywiste współwystąpienia par w historii losowań.
+     * Zlicza rzeczywiste współwystąpienia par w historii losowań z wagą świeżości (EMA Recency Decay).
+     *
+     * Nowsze losowania (mniejszy indeks w tablicy $draws) otrzymują wyższą wagę:
+     * w(idx) = 1.0 + 0.6 * exp(-idx / 15.0), dzięki czemu świeże trendy z ostatnich
+     * 10-20 sesji mają większą siłę przebicia niż losowania sprzed pół roku.
      *
      * @param array<int> $pool
      * @param array<int, array<int>> $draws
-     * @return array<int, array<int, int>>|null null, gdy historia jest bezużyteczna
+     * @return array<int, array<int, float>>|null null, gdy historia jest bezużyteczna
      */
     private function countPairCoOccurrences(array $pool, array $draws): ?array
     {
@@ -260,7 +264,7 @@ class StatisticalOptimizerService
         $counts = [];
         $observedPairs = 0;
 
-        foreach ($draws as $draw) {
+        foreach (array_values($draws) as $drawIdx => $draw) {
             if (!is_array($draw)) {
                 continue;
             }
@@ -274,13 +278,14 @@ class StatisticalOptimizerService
             }
             $relevant = array_values(array_unique($relevant));
 
+            $weight = $this->recencyWeight($drawIdx);
             $len = count($relevant);
             for ($a = 0; $a < $len; $a++) {
                 for ($b = $a + 1; $b < $len; $b++) {
                     $n1 = $relevant[$a];
                     $n2 = $relevant[$b];
-                    $counts[$n1][$n2] = ($counts[$n1][$n2] ?? 0) + 1;
-                    $counts[$n2][$n1] = ($counts[$n2][$n1] ?? 0) + 1;
+                    $counts[$n1][$n2] = ($counts[$n1][$n2] ?? 0.0) + $weight;
+                    $counts[$n2][$n1] = ($counts[$n2][$n1] ?? 0.0) + $weight;
                     $observedPairs++;
                 }
             }
@@ -288,6 +293,148 @@ class StatisticalOptimizerService
 
         // Historia bez ani jednej pary z puli nie niesie informacji.
         return $observedPairs > 0 ? $counts : null;
+    }
+
+    /**
+     * Wykładnicza waga świeżości losowania (EMA Recency Decay).
+     * Dla najnowszego losowania (idx=0) wynosi 1.60, dla starszych dąży asymptotycznie do 1.0.
+     */
+    private function recencyWeight(int $drawIdx): float
+    {
+        return 1.0 + (0.6 * exp(-max(0, $drawIdx) / 15.0));
+    }
+
+    /**
+     * Buduje mapę synergii trójek (3-cliques) z historii losowań z wagą świeżości.
+     * Kluczem mapy jest posortowana trójka "a-b-c" (gdzie a < b < c), wartością
+     * znormalizowany wynik synergii w skali [0..60].
+     *
+     * @param array<int> $pool
+     * @param array<int, array<int>> $draws
+     * @return array<string, float>
+     */
+    public function buildTripletAffinityMap(array $pool, array $draws = []): array
+    {
+        if (count($draws) < self::MIN_DRAWS_FOR_CO_OCCURRENCE) {
+            return [];
+        }
+
+        $inPool = array_fill_keys(array_map('intval', $pool), true);
+        $rawCounts = [];
+        $rawOccurrences = [];
+
+        foreach (array_values($draws) as $drawIdx => $draw) {
+            if (!is_array($draw)) {
+                continue;
+            }
+
+            $relevant = [];
+            foreach ($draw as $n) {
+                $n = (int) $n;
+                if (isset($inPool[$n])) {
+                    $relevant[] = $n;
+                }
+            }
+            $relevant = array_values(array_unique($relevant));
+            sort($relevant);
+
+            $len = count($relevant);
+            if ($len < 3) {
+                continue;
+            }
+
+            $weight = $this->recencyWeight($drawIdx);
+            for ($i = 0; $i < $len - 2; $i++) {
+                for ($j = $i + 1; $j < $len - 1; $j++) {
+                    for ($k = $j + 1; $k < $len; $k++) {
+                        $key = sprintf('%d-%d-%d', $relevant[$i], $relevant[$j], $relevant[$k]);
+                        $rawCounts[$key] = ($rawCounts[$key] ?? 0.0) + $weight;
+                        $rawOccurrences[$key] = ($rawOccurrences[$key] ?? 0) + 1;
+                    }
+                }
+            }
+        }
+
+        // Prawdziwa klika trójkowa (3-clique) wymaga przynajmniej 2 wspólnych wystąpień w historii,
+        // aby nie premiować sklonowania pojedynczego przeszłego losowania (gdzie C(6,3)=20 trójek).
+        $recurringCounts = [];
+        foreach ($rawCounts as $key => $val) {
+            if (($rawOccurrences[$key] ?? 0) >= 2) {
+                $recurringCounts[$key] = $val;
+            }
+        }
+
+        if ($recurringCounts === []) {
+            return [];
+        }
+
+        $maxVal = max($recurringCounts);
+        if ($maxVal <= 0.0) {
+            return [];
+        }
+
+        $scale = 60.0 / $maxVal;
+        $normalized = [];
+        foreach ($recurringCounts as $key => $val) {
+            $normalized[$key] = round($val * $scale, 2);
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * Oblicza sumaryczny bonus synergii trójek (3-cliques) zawartych w kuponie.
+     *
+     * @param array<int> $bet
+     * @param array<string, float> $tripletMap
+     */
+    public function calculateTripletSynergyScore(array $bet, array $tripletMap): float
+    {
+        if ($tripletMap === [] || count($bet) < 3) {
+            return 0.0;
+        }
+
+        $sorted = array_values(array_map('intval', $bet));
+        sort($sorted);
+        $len = count($sorted);
+        $total = 0.0;
+
+        for ($i = 0; $i < $len - 2; $i++) {
+            for ($j = $i + 1; $j < $len - 1; $j++) {
+                for ($k = $j + 1; $k < $len; $k++) {
+                    $key = sprintf('%d-%d-%d', $sorted[$i], $sorted[$j], $sorted[$k]);
+                    $total += ($tripletMap[$key] ?? 0.0);
+                }
+            }
+        }
+
+        return round($total, 2);
+    }
+
+    /**
+     * Oblicza przyrostowy bonus trójek przy dokładaniu kandydata do budowanego kuponu.
+     *
+     * @param array<int> $currentBet
+     * @param array<string, float> $tripletMap
+     */
+    private function incrementalTripletBonus(int $candidate, array $currentBet, array $tripletMap): float
+    {
+        $len = count($currentBet);
+        if ($tripletMap === [] || $len < 2) {
+            return 0.0;
+        }
+
+        $bonus = 0.0;
+        for ($i = 0; $i < $len - 1; $i++) {
+            for ($j = $i + 1; $j < $len; $j++) {
+                $t = [$candidate, (int) $currentBet[$i], (int) $currentBet[$j]];
+                sort($t);
+                $key = sprintf('%d-%d-%d', $t[0], $t[1], $t[2]);
+                $bonus += ($tripletMap[$key] ?? 0.0);
+            }
+        }
+
+        return $bonus;
     }
 
     /**
@@ -350,7 +497,9 @@ class StatisticalOptimizerService
 
         $this->assertBetCountIsAchievable($poolSize, $pick, $numBets);
 
-        $pairMatrix = $this->buildPairAffinityMatrix($pool, $frequencies, $options['draws'] ?? []);
+        $draws = $options['draws'] ?? [];
+        $pairMatrix = $this->buildPairAffinityMatrix($pool, $frequencies, $draws);
+        $tripletMap = $this->buildTripletAffinityMap($pool, $draws);
         $gaussParams = $this->calculateGaussianParameters($maxNumber, $pick);
         $maxPerDecade = $this->maxPerDecade($pick, $maxNumber);
         $coverDecades = $options['cover_decades'] ?? false;
@@ -474,8 +623,9 @@ class StatisticalOptimizerService
                         }
 
                         $usagePenalty = $usageCounts[$candidate] * $penaltyUsage;
+                        $tripletBonus = $this->incrementalTripletBonus($candidate, $currentBet, $tripletMap);
 
-                        $score = ($fScore * 3.0) + ($pairAffinitySum * $wPair) - $usagePenalty - $pairUsagePenaltySum;
+                        $score = ($fScore * 3.0) + ($pairAffinitySum * $wPair) + ($tripletBonus * 0.8) - $usagePenalty - $pairUsagePenaltySum;
                         if ($isCandCoveringNewDecade) {
                             $score += 50.0; // Bonus za pokrycie nowej dekady
                         }
@@ -557,7 +707,7 @@ class StatisticalOptimizerService
                 }
 
                 // 3. Ocena całkowita kuponu (Fitness Score)
-                $fitness = $this->calculateBetFitness($currentBet, $pairMatrix, $frequencies, $gaussParams, $maxNumber, $withNeighbours);
+                $fitness = $this->calculateBetFitness($currentBet, $pairMatrix, $frequencies, $gaussParams, $maxNumber, $withNeighbours, $tripletMap);
 
                 if ($fitness['total_score'] > $bestCandidateFitness) {
                     $bestCandidateFitness = $fitness['total_score'];
@@ -599,7 +749,7 @@ class StatisticalOptimizerService
         // Sortuj zakłady według rankingu Fitness Score (malejąco)
         $betsWithFitness = [];
         foreach ($generatedBets as $bet) {
-            $fit = $this->calculateBetFitness($bet, $pairMatrix, $frequencies, $gaussParams, $maxNumber, $withNeighbours);
+            $fit = $this->calculateBetFitness($bet, $pairMatrix, $frequencies, $gaussParams, $maxNumber, $withNeighbours, $tripletMap);
             $betsWithFitness[] = [
                 'bet' => $bet,
                 'fitness' => $fit,
@@ -675,7 +825,9 @@ class StatisticalOptimizerService
 
         $this->assertBetCountIsAchievable($poolSize, $pick, $numBets);
 
-        $pairMatrix = $this->buildPairAffinityMatrix($pool, $frequencies, $options['draws'] ?? []);
+        $draws = $options['draws'] ?? [];
+        $pairMatrix = $this->buildPairAffinityMatrix($pool, $frequencies, $draws);
+        $tripletMap = $this->buildTripletAffinityMap($pool, $draws);
         $gaussParams = $this->calculateGaussianParameters($maxNumber, $pick);
         $maxPerDecade = $this->maxPerDecade($pick, $maxNumber);
         $coverDecades = $options['cover_decades'] ?? false;
@@ -749,7 +901,8 @@ class StatisticalOptimizerService
                             $aff += ($pairMatrix[$cand][$cb] ?? 0);
                         }
                         $freq = ($frequencies[$cand] ?? 1);
-                        $score = ($aff * 1.5) + ($freq * 2.0);
+                        $tBonus = $this->incrementalTripletBonus($cand, $currentBet, $tripletMap);
+                        $score = ($aff * 1.5) + ($freq * 2.0) + ($tBonus * 0.8);
 
                         if ($score > $bestCandScore) {
                             $bestCandScore = $score;
@@ -800,7 +953,7 @@ class StatisticalOptimizerService
 
             $partFitness = 0.0;
             foreach ($currentPartition as $pb) {
-                $f = $this->calculateBetFitness($pb, $pairMatrix, $frequencies, $gaussParams, $maxNumber, $withNeighbours);
+                $f = $this->calculateBetFitness($pb, $pairMatrix, $frequencies, $gaussParams, $maxNumber, $withNeighbours, $tripletMap);
                 $partFitness += $f['total_score'];
             }
 
@@ -912,8 +1065,9 @@ class StatisticalOptimizerService
                             $pairPen += ($pairUsageCounts[$candidate][$sel] ?? 0) * $penaltyPairUsage;
                         }
                         $uPen = $usageCounts[$candidate] * $penaltyUsage;
+                        $tBonus = $this->incrementalTripletBonus($candidate, $currentBet, $tripletMap);
 
-                        $score = ($fScore * 3.0) + ($pairAff * $wPair) - $uPen - $pairPen;
+                        $score = ($fScore * 3.0) + ($pairAff * $wPair) + ($tBonus * 0.8) - $uPen - $pairPen;
                         if ($isCandCoveringNewDecade) {
                             $score += 50.0;
                         }
@@ -960,7 +1114,7 @@ class StatisticalOptimizerService
                 }
                 if ($dup) continue;
 
-                $fit = $this->calculateBetFitness($currentBet, $pairMatrix, $frequencies, $gaussParams, $maxNumber, $withNeighbours);
+                $fit = $this->calculateBetFitness($currentBet, $pairMatrix, $frequencies, $gaussParams, $maxNumber, $withNeighbours, $tripletMap);
 
                 // Ile razy pary tego kuponu są już obsadzone w dotychczasowym zestawie.
                 $repeatedPairLoad = 0;
@@ -1005,7 +1159,7 @@ class StatisticalOptimizerService
         // FAZA 3: Ranking i sortowanie zakładów według Fitness Score
         $betsWithFitness = [];
         foreach ($generatedBets as $bet) {
-            $fit = $this->calculateBetFitness($bet, $pairMatrix, $frequencies, $gaussParams, $maxNumber, $withNeighbours);
+            $fit = $this->calculateBetFitness($bet, $pairMatrix, $frequencies, $gaussParams, $maxNumber, $withNeighbours, $tripletMap);
             $betsWithFitness[] = [
                 'bet' => $bet,
                 'fitness' => $fit,
@@ -1101,7 +1255,9 @@ class StatisticalOptimizerService
 
         $this->assertBetCountIsAchievable($poolSize, $pick, $numBets);
 
-        $pairMatrix = $this->buildPairAffinityMatrix($pool, $frequencies, $options['draws'] ?? []);
+        $draws = $options['draws'] ?? [];
+        $pairMatrix = $this->buildPairAffinityMatrix($pool, $frequencies, $draws);
+        $tripletMap = $this->buildTripletAffinityMap($pool, $draws);
         $gaussParams = $this->calculateGaussianParameters($maxNumber, $pick);
         $maxPerDecade = $this->maxPerDecade($pick, $maxNumber);
 
@@ -1301,7 +1457,8 @@ class StatisticalOptimizerService
                         $tier2,
                         $tier3,
                         $anchors,
-                        $directNeighbours
+                        $directNeighbours,
+                        $tripletMap
                     );
                     $partFitness += $f['total_score'];
                 }
@@ -1425,8 +1582,9 @@ class StatisticalOptimizerService
 
                         $usagePenalty = ($usageCounts[$cand] ?? 0) * 10.0;
                         $freq = $frequencies[$cand] ?? 1;
+                        $tBonus = $this->incrementalTripletBonus($cand, $currentBet, $tripletMap);
 
-                        $candScore = ($aff * 1.2) + ($freq * 1.5) + $tierWeight - $usagePenalty - $pairPenalty;
+                        $candScore = ($aff * 1.2) + ($freq * 1.5) + ($tBonus * 0.8) + $tierWeight - $usagePenalty - $pairPenalty;
 
                         if ($candScore > $bestScore) {
                             $bestScore = $candScore;
@@ -1460,7 +1618,8 @@ class StatisticalOptimizerService
                         $tier2,
                         $tier3,
                         $anchors,
-                        $directNeighbours
+                        $directNeighbours,
+                        $tripletMap
                     );
 
                     $score = $candFit['total_score'];
@@ -1508,7 +1667,8 @@ class StatisticalOptimizerService
                 $tier2,
                 $tier3,
                 $anchors,
-                $directNeighbours
+                $directNeighbours,
+                $tripletMap
             );
             $betsWithFitness[] = [
                 'bet' => $bet,
@@ -1612,7 +1772,8 @@ class StatisticalOptimizerService
         array $tier2,
         array $tier3,
         array $anchors,
-        array $directNeighbours
+        array $directNeighbours,
+        array $tripletMap = []
     ): array {
         $pick = count($bet);
         $sum = array_sum($bet);
@@ -1693,14 +1854,23 @@ class StatisticalOptimizerService
         $anchorsCount = count(array_intersect($bet, $anchors));
         $neighboursCount = count(array_intersect($bet, $directNeighbours));
 
+        $anchorBonus = min(2, $anchorsCount) * 20.0;
+        if ($anchorsCount >= 4) {
+            // Kara za kopiowanie niemal całego ostatniego losowania (syndykat zakłada ~20% powtórek, czyli 1-2 kotwice)
+            $anchorBonus -= ($anchorsCount - 2) * 60.0;
+        }
+
         $tierPoints = ($t1Count * 35.0)
                     + ($t2Count * 15.0)
                     + ($t3Count * 2.0)
-                    + ($anchorsCount * 20.0)
-                    + ($neighboursCount * 20.0);
+                    + $anchorBonus
+                    + ($neighboursCount * 22.0);
+
+        $tripletSynergy = $this->calculateTripletSynergyScore($bet, $tripletMap);
 
         $totalScore = $tierPoints
                     + ($pairAffinityTotal * 1.0)
+                    + ($tripletSynergy * 0.8)
                     + ($freqTotal * 1.5)
                     + $parityBonus
                     + $gaussianBonus
@@ -1724,6 +1894,7 @@ class StatisticalOptimizerService
             'max_consecutive' => $maxConsecutive,
             'pair_affinity_total' => $pairAffinityTotal,
             'avg_pair_affinity' => round($avgPairAffinity, 2),
+            'triplet_synergy_total' => $tripletSynergy,
             'freq_total' => $freqTotal,
             'tier1_count' => $t1Count,
             'tier2_count' => $t2Count,
@@ -1792,7 +1963,8 @@ class StatisticalOptimizerService
         array $frequencies,
         array $gaussParams,
         int $maxNumber,
-        bool $withNeighbours = false
+        bool $withNeighbours = false,
+        array $tripletMap = []
     ): array {
         $pick = count($bet);
         $sum = array_sum($bet);
@@ -1868,7 +2040,9 @@ class StatisticalOptimizerService
             }
         }
 
-        $totalScore = ($pairAffinityTotal * 1.0) + ($freqTotal * 2.5) + $parityBonus + $gaussianBonus + $decadeBonus + $consecutivePenalty;
+        $tripletSynergy = $this->calculateTripletSynergyScore($bet, $tripletMap);
+
+        $totalScore = ($pairAffinityTotal * 1.0) + ($tripletSynergy * 0.8) + ($freqTotal * 2.5) + $parityBonus + $gaussianBonus + $decadeBonus + $consecutivePenalty;
 
         return [
             'total_score' => round($totalScore, 1),
@@ -1880,6 +2054,7 @@ class StatisticalOptimizerService
             'max_consecutive' => $maxConsecutive,
             'pair_affinity_total' => $pairAffinityTotal,
             'avg_pair_affinity' => round($avgPairAffinity, 2),
+            'triplet_synergy_total' => $tripletSynergy,
             'freq_total' => $freqTotal,
         ];
     }
@@ -2088,6 +2263,26 @@ class StatisticalOptimizerService
         usort($topPairs, fn($a, $b) => $b['affinity'] <=> $a['affinity']);
         $top10Pairs = array_slice($topPairs, 0, 10);
 
+        // Top 10 trójek (3-cliques) o najwyższej synergii w puli
+        $tripletMap = $this->buildTripletAffinityMap($pool, $draws);
+        $topTriplets = [];
+        foreach ($tripletMap as $tKey => $tSynergy) {
+            $parts = array_map('intval', explode('-', $tKey));
+            $betsWithTriplet = 0;
+            foreach ($bets as $b) {
+                if (count(array_intersect($parts, $b)) === 3) {
+                    $betsWithTriplet++;
+                }
+            }
+            $topTriplets[] = [
+                'triplet' => $parts,
+                'synergy' => $tSynergy,
+                'bets_included' => $betsWithTriplet,
+            ];
+        }
+        usort($topTriplets, fn($a, $b) => $b['synergy'] <=> $a['synergy']);
+        $top10Triplets = array_slice($topTriplets, 0, 10);
+
         // Analiza parzystości
         $paritySummary = [];
         foreach ($bets as $b) {
@@ -2119,6 +2314,7 @@ class StatisticalOptimizerService
             'affinity_draws_used' => $this->lastAffinityDrawCount,
             'affinity_is_real_co_occurrence' => $this->lastAffinitySource === self::AFFINITY_SOURCE_CO_OCCURRENCE,
             'top_pairs' => $top10Pairs,
+            'top_triplets' => $top10Triplets,
             'parity_summary' => $paritySummary,
             'unique_pairs_covered' => $uniquePairsCovered,
             'unique_pairs_total_in_pool' => $dilutionMetrics['total_possible_pairs_in_pool'],

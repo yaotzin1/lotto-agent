@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Tests\Unit\Service\AgentTools;
 
 use App\Service\AgentTools\FetchNeighboursAnalysisTool;
+use App\Service\DrawHistoryProvider;
 use App\Service\GameRegistryService;
 use App\Service\LottoApiClient;
 use PHPUnit\Framework\TestCase;
@@ -75,5 +76,41 @@ class FetchNeighboursAnalysisToolTest extends TestCase
         // Check direct repeats contain 15
         $repeatNumbers = array_column($data['direct_repeats_20_percent'], 'number');
         $this->assertContains(15, $repeatNumbers);
+    }
+
+    public function testExecuteUsesRealDrawHistoryAnchorsWhenAvailable(): void
+    {
+        $drawHistoryProvider = $this->createMock(DrawHistoryProvider::class);
+        $drawHistoryProvider->method('getHistory')
+            ->willReturn([
+                'draws' => [
+                    ['main' => [2, 3, 19, 23, 42, 49], 'special' => []],
+                    ['main' => [5, 11, 19, 28, 34, 45], 'special' => []],
+                ],
+                'from_cache' => 2,
+                'fetched' => 0,
+                'rate_limited' => false,
+                'missing' => 0,
+            ]);
+
+        $tool = new FetchNeighboursAnalysisTool(
+            $this->lottoApiClient,
+            $this->gameRegistryService,
+            $drawHistoryProvider
+        );
+
+        $resultJson = $tool->execute(['game' => 'Lotto', 'sessions' => 20]);
+        $data = json_decode($resultJson, true);
+
+        $this->assertIsArray($data);
+        $this->assertSame('draw_history', $data['source']);
+        $this->assertSame([2, 3, 19, 23, 42, 49], $data['most_recent_draw']);
+
+        $repeatNumbers = array_column($data['direct_repeats_20_percent'], 'number');
+        $this->assertEqualsCanonicalizing([2, 3, 19, 23, 42, 49], $repeatNumbers);
+
+        $neighbourNumbers = array_column($data['neighbours_60_percent'], 'number');
+        $this->assertContains(18, $neighbourNumbers);
+        $this->assertContains(20, $neighbourNumbers);
     }
 }

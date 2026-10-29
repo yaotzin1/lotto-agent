@@ -14,17 +14,18 @@ class GeminiApiClient implements LlmClientInterface
     private const MODELS_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
     
     private const FALLBACK_MODELS = [
+        'gemini-3.8-flash',
         'gemini-3.7-flash',
         'gemini-3.6-flash',
         'gemini-3.5-flash',
+        'gemini-2.5-pro',
         'gemini-2.5-flash',
         'gemini-flash-latest',
         'gemini-pro-latest',
-        'gemini-2.5-pro',
         'gemini-3.5-flash-lite',
     ];
 
-    private string $activeModel = 'gemini-3.7-flash';
+    private string $activeModel = 'gemini-3.8-flash';
     private bool $modelExplicitlySet = false;
 
     public function __construct(
@@ -203,9 +204,7 @@ class GeminiApiClient implements LlmClientInterface
 
     public function generateContent(array $payload, int $timeoutSeconds = 120): string
     {
-        $modelsToTry = $this->modelExplicitlySet
-            ? [$this->activeModel]
-            : array_values(array_unique([$this->activeModel, ...self::FALLBACK_MODELS]));
+        $modelsToTry = array_values(array_unique([$this->activeModel, ...self::FALLBACK_MODELS]));
 
         $maxRetries = count($modelsToTry);
         $retryDelay = 2;
@@ -278,9 +277,7 @@ class GeminiApiClient implements LlmClientInterface
         ?string $systemInstruction = null,
         int $timeoutSeconds = 120
     ): array {
-        $modelsToTry = $this->modelExplicitlySet
-            ? [$this->activeModel]
-            : array_values(array_unique([$this->activeModel, ...self::FALLBACK_MODELS]));
+        $modelsToTry = array_values(array_unique([$this->activeModel, ...self::FALLBACK_MODELS]));
 
         $maxRetries = count($modelsToTry);
         $retryDelay = 2;

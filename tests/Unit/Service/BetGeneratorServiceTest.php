@@ -100,4 +100,22 @@ class BetGeneratorServiceTest extends TestCase
         $this->assertCount(15, $result['bets']);
         $this->assertSame(42, $result['report']['unique_numbers_used']);
     }
+
+    public function testAbbreviatedWheelingMaximizesTripletAndPairSetCover(): void
+    {
+        $pool = range(1, 12); // C(12, 3) = 220 trójek, C(12, 2) = 66 par
+        $bets = $this->service->generateBalancedShorthand($pool, 6, 11);
+
+        $this->assertCount(11, $bets);
+
+        $subsets = $this->service->calculateSubsetsCoverage($pool, $bets);
+
+        // 11 kuponów po 6 liczb pokrywa niemal 100% par C(12,2)=66 i wysoki odsetek trójek C(12,3)=220 bez duplikatów
+        $this->assertGreaterThanOrEqual(90.0, $subsets['pairs_coverage_pct']);
+        $this->assertGreaterThanOrEqual(75.0, $subsets['triplets_coverage_pct']);
+
+        // Sprawdź gwarancję trafienia 3/6 przy wylosowaniu 6 liczb z puli 12
+        $coverage = $this->service->calculateCoverage($pool, $bets, 6);
+        $this->assertGreaterThanOrEqual(98.0, $coverage['guarantees'][3]);
+    }
 }

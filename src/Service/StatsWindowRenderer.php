@@ -319,4 +319,178 @@ class StatsWindowRenderer
             ]
         );
     }
+
+    /**
+     * Renderuje wizualną mapę cieplną bębna (1..maxNumber) z oznaczeniem kotwic,
+     * liczb w puli oraz krotności ich użycia w wygenerowanych kuponach.
+     *
+     * @param array<int, array<int>> $bets
+     * @param array<int> $pool
+     * @param array<int> $anchors
+     */
+    public function renderDrumHeatmap(
+        SymfonyStyle $io,
+        array $bets,
+        array $pool,
+        int $maxNumber,
+        array $anchors = []
+    ): void {
+        if ($maxNumber < 1 || $bets === []) {
+            return;
+        }
+
+        $io->section(sprintf('🎯 WIZUALNA MAPA BĘBNA (1..%d) — POKRYCIE I KOTWICE', $maxNumber));
+
+        $inPool = array_fill_keys(array_map('intval', $pool), true);
+        $isAnchor = array_fill_keys(array_map('intval', $anchors), true);
+        $usage = array_fill(1, $maxNumber, 0);
+
+        foreach ($bets as $bet) {
+            foreach ($bet as $n) {
+                $n = (int) $n;
+                if ($n >= 1 && $n <= $maxNumber) {
+                    $usage[$n]++;
+                }
+            }
+        }
+
+        $maxUsage = max($usage);
+        $highThreshold = max(2, (int) ceil($maxUsage * 0.65));
+
+        $rows = [];
+        $columnsPerRow = 10;
+        $totalRows = (int) ceil($maxNumber / $columnsPerRow);
+
+        for ($r = 0; $r < $totalRows; $r++) {
+            $startNum = ($r * $columnsPerRow) + 1;
+            $endNum = min($maxNumber, ($r + 1) * $columnsPerRow);
+            $decadeLabel = sprintf('%02d-%02d', $startNum, $endNum);
+            $cells = [$decadeLabel];
+
+            for ($col = 0; $col < $columnsPerRow; $col++) {
+                $num = $startNum + $col;
+                if ($num > $maxNumber) {
+                    $cells[] = '';
+                    continue;
+                }
+
+                $cnt = $usage[$num];
+                $anchorMark = isset($isAnchor[$num]) ? '★' : ' ';
+
+                if (!isset($inPool[$num]) && $cnt === 0) {
+                    $cells[] = sprintf('<fg=gray> ·%02d·  </>', $num);
+                } elseif ($cnt === 0) {
+                    $cells[] = sprintf('<fg=red>%s%02d(0x)</>', $anchorMark, $num);
+                } elseif (isset($isAnchor[$num])) {
+                    $cells[] = sprintf('<fg=yellow;options=bold>★%02d(%dx)</>', $num, $cnt);
+                } elseif ($cnt >= $highThreshold) {
+                    $cells[] = sprintf('<fg=cyan;options=bold> %02d(%dx)</>', $num, $cnt);
+                } else {
+                    $cells[] = sprintf('<fg=green> %02d(%dx)</>', $num, $cnt);
+                }
+            }
+
+            $rows[] = $cells;
+        }
+
+        $headers = ['Dekada', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'];
+        $io->table($headers, $rows);
+        $io->text(
+            'Legenda: <fg=yellow;options=bold>★XX(Nx)</> Kotwica ostatniego losowania | '
+            . '<fg=cyan;options=bold>XX(Nx)</> Wysoka koncentracja | '
+            . '<fg=green>XX(Nx)</> W grze | '
+            . '<fg=gray>·XX·</> Poza pulą'
+        );
+        $io->newLine();
+    }
+
+    /**
+     * Renderuje pogłębioną analizę statystyczną: rozkład Gaussa (histogram ASCII),
+     * Top 10 Par, Top 10 Trójek (3-Cliques) oraz pokrycie podzbiorów t-Design.
+     *
+     * @param array<string, mixed>|null $statsReport
+     * @param array<string, mixed>|null $subsetsCoverage
+     */
+    public function renderDeepSynergyAndGaussianDetails(
+        SymfonyStyle $io,
+        ?array $statsReport,
+        ?array $subsetsCoverage = null
+    ): void {
+        $io->section('📈 SZCZEGÓŁOWA ANALIZA GAUSSA, PAR, TRÓJEK (3-CLIQUES) I T-DESIGN');
+
+        if ($subsetsCoverage !== null) {
+            $io->table(
+                ['Podzbiory Kombinatoryczne (Wheeling t-Design)', 'Pokryte w Kuponach', 'Wszystkie w Puli', 'Pokrycie %'],
+                [
+                    [
+                        'Pary (2-subsets, t=2)',
+                        $subsetsCoverage['pairs_covered'],
+                        $subsetsCoverage['pairs_total'],
+                        sprintf('%.2f%%', $subsetsCoverage['pairs_coverage_pct']),
+                    ],
+                    [
+                        'Trójki (3-subsets, t=3 — baza gwarancji 3/k)',
+                        $subsetsCoverage['triplets_covered'],
+                        $subsetsCoverage['triplets_total'],
+                        sprintf('%.2f%%', $subsetsCoverage['triplets_coverage_pct']),
+                    ],
+                ]
+            );
+        }
+
+        if ($statsReport === null) {
+            return;
+        }
+
+        if (isset($statsReport['gaussian_analysis']['histogram_rows'])) {
+            $ga = $statsReport['gaussian_analysis'];
+            $io->text(sprintf(
+                'Rozkład sum kuponów: min=<fg=cyan>%d</>, max=<fg=cyan>%d</>, średnia=<fg=yellow;options=bold>%.1f</> (oczekiwana Gaussa: <fg=green>%d</>, przedział optymalny: <fg=green>%s</>)',
+                $ga['min_sum'],
+                $ga['max_sum'],
+                $ga['avg_sum'],
+                $ga['expected_sum'],
+                $ga['optimal_range']
+            ));
+
+            $histRows = [];
+            foreach ($ga['histogram_rows'] as $row) {
+                $histRows[] = [
+                    $row['range'],
+                    $row['count'],
+                    $row['bar'],
+                    $row['tag'],
+                ];
+            }
+            if ($histRows !== []) {
+                $io->table(['Przedział Sumy', 'Kupony', 'Histogram', 'Strefa'], $histRows);
+            }
+        }
+
+        if (!empty($statsReport['top_pairs'])) {
+            $pairRows = [];
+            foreach ($statsReport['top_pairs'] as $idx => $p) {
+                $pairRows[] = [
+                    '#' . ($idx + 1),
+                    implode(' + ', $p['pair']),
+                    $p['affinity'],
+                    $p['bets_included'] . 'x',
+                ];
+            }
+            $io->table(['Rank', 'Para Liczb', 'Affinity Score (EMA)', 'Wystąpienia w pakiecie'], $pairRows);
+        }
+
+        if (!empty($statsReport['top_triplets'])) {
+            $tripletRows = [];
+            foreach ($statsReport['top_triplets'] as $idx => $t) {
+                $tripletRows[] = [
+                    '#' . ($idx + 1),
+                    implode(' + ', $t['triplet']),
+                    sprintf('%.1f', $t['synergy']),
+                    $t['bets_included'] . 'x',
+                ];
+            }
+            $io->table(['Rank', 'Trójka Liczb (3-Clique)', 'Synergia Trójki (EMA)', 'Wystąpienia w pakiecie'], $tripletRows);
+        }
+    }
 }

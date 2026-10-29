@@ -42,7 +42,7 @@ class GeminiApiClientTest extends TestCase
         $this->assertSame('1, 5, 12, 19, 24, 38', $result);
     }
 
-    public function testGenerateContentUsesPrimaryGemini37FlashModelFirst(): void
+    public function testGenerateContentUsesPrimaryGemini38FlashModelFirst(): void
     {
         $requestedUrl = null;
         $mockResponse = new MockResponse(json_encode([
@@ -50,7 +50,7 @@ class GeminiApiClientTest extends TestCase
                 [
                     'content' => [
                         'parts' => [
-                            ['text' => 'Result from 3.7 flash'],
+                            ['text' => 'Result from 3.8 flash'],
                         ],
                     ],
                 ],
@@ -65,9 +65,9 @@ class GeminiApiClientTest extends TestCase
         $client = new GeminiApiClient($httpClient, new NullLogger(), 'test_key');
         $result = $client->generateContent(['contents' => []]);
 
-        $this->assertSame('Result from 3.7 flash', $result);
+        $this->assertSame('Result from 3.8 flash', $result);
         $this->assertNotNull($requestedUrl);
-        $this->assertStringContainsString('models/gemini-3.7-flash:generateContent', $requestedUrl);
+        $this->assertStringContainsString('models/gemini-3.8-flash:generateContent', $requestedUrl);
     }
 
     public function testGenerateContentFallsBackOn429Or503(): void
@@ -96,7 +96,37 @@ class GeminiApiClientTest extends TestCase
 
         $this->assertSame('Fallback result', $result);
         $this->assertCount(2, $requestedUrls);
-        $this->assertStringContainsString('models/gemini-3.7-flash:generateContent', $requestedUrls[0]);
-        $this->assertStringContainsString('models/gemini-3.6-flash:generateContent', $requestedUrls[1]);
+        $this->assertStringContainsString('models/gemini-3.8-flash:generateContent', $requestedUrls[0]);
+        $this->assertStringContainsString('models/gemini-3.7-flash:generateContent', $requestedUrls[1]);
+    }
+
+    public function testExplicitlySetModelAlsoFallsBackOn404(): void
+    {
+        $requestedUrls = [];
+        $response1 = new MockResponse('Model not found', ['http_code' => 404]);
+        $response2 = new MockResponse(json_encode([
+            'candidates' => [
+                [
+                    'content' => [
+                        'parts' => [
+                            ['text' => 'Recovered via fallback'],
+                        ],
+                    ],
+                ],
+            ],
+        ]), ['http_code' => 200]);
+
+        $httpClient = new MockHttpClient(function (string $method, string $url) use (&$requestedUrls, $response1, $response2) {
+            $requestedUrls[] = $url;
+            return count($requestedUrls) === 1 ? $response1 : $response2;
+        });
+
+        $client = (new GeminiApiClient($httpClient, new NullLogger(), 'test_key'))->withModel('non-existent-model');
+        $result = $client->generateContent(['contents' => []]);
+
+        $this->assertSame('Recovered via fallback', $result);
+        $this->assertCount(2, $requestedUrls);
+        $this->assertStringContainsString('models/non-existent-model:generateContent', $requestedUrls[0]);
+        $this->assertStringContainsString('models/gemini-3.8-flash:generateContent', $requestedUrls[1]);
     }
 }

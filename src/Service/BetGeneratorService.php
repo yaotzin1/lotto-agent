@@ -201,10 +201,26 @@ class BetGeneratorService
         return false;
     }
 
-    // === SILNIK REDUKCJI: STRICT BUCKET BALANCE ===
+    // === SILNIK REDUKCJI: ABBREVIATED WHEELING (t-DESIGN SET-COVER + BUCKET BALANCE) ===
+    /**
+     * Generuje skrócony system kombinatoryczny (Abbreviated Wheel) metodą
+     * zachłannego pokrycia zbiorów (Greedy t-Design Set-Cover dla t=3 i t=2)
+     * połączonego ze ścisłym bilansem koszykowym pojedynczych liczb (Bucket Balance)
+     * oraz lokalnym przeszukiwaniem 1-opt (Kempe-style swap).
+     *
+     * Dla każdego nowego kuponu algorytm przeprowadza wielostartowy turniej kandydatów
+     * i wybiera ten kupon, który pokrywa najwięcej NOWYCH (dotąd niepokrytych)
+     * trójek C(pool, 3) oraz par C(pool, 2), maksymalizując gwarancję trafienia
+     * min. 3/k oraz 4/k przy trafieniu wygranych liczb do puli.
+     *
+     * @param array<int> $pool
+     * @return array<int, array<int>>
+     */
     public function generateBalancedShorthand(array $pool, int $pick, int $limit): array
     {
-        $pool = array_values(array_unique($pool));
+        $pool = array_values(array_unique(array_map('intval', $pool)));
+        sort($pool);
+        $poolSize = count($pool);
 
         if ($pick < 1) {
             throw new \InvalidArgumentException(
@@ -214,19 +230,23 @@ class BetGeneratorService
 
         // Wcześniej zwracana była tu pula "jak leci", co dawało kupon krótszy niż
         // wymaga gra (np. 3 liczby dla Lotto 6/49) — czyli kupon niegrywalny.
-        if (count($pool) < $pick) {
+        if ($poolSize < $pick) {
             throw new \InvalidArgumentException(sprintf(
                 'Pula (%d liczb) jest mniejsza niż wymagana ilość skreśleń (%d).',
-                count($pool),
+                $poolSize,
                 $pick
             ));
         }
 
-        if (count($pool) === $pick) {
+        if ($poolSize === $pick) {
             return [$pool];
         }
 
+        $maxPossible = (int) $this->countCombinations($poolSize, $pick);
+        $targetLimit = min($limit, $maxPossible);
+
         $results = [];
+        $seenBets = [];
         $usageCounts = array_fill_keys($pool, 0);
         $pairCounts = [];
         foreach ($pool as $n1) {
@@ -234,89 +254,138 @@ class BetGeneratorService
                 $pairCounts[$n1][$n2] = 0;
             }
         }
-        $attempts = 0;
+        /** @var array<string, int> $tripletCounts */
+        $tripletCounts = [];
 
-        while (count($results) < $limit) {
-            $attempts++;
-            if ($attempts > 20000) break;
+        $trackTriplets = ($pick >= 3);
+        $trialsPerTicket = $poolSize <= 24 ? min(20, max(10, $poolSize)) : 8;
+        $enableOneOpt = ($poolSize <= 26 && $pick >= 3);
 
-            $bet = [];
-            $available = $pool;
-            shuffle($available);
+        for ($ticketIdx = 0; $ticketIdx < $targetLimit; $ticketIdx++) {
+            // Posortuj pulę wg najniższego dotychczasowego użycia (oraz najmniejszego nasycenia par)
+            $sortedByUsage = $pool;
+            usort($sortedByUsage, static function (int $a, int $b) use ($usageCounts, $pairCounts): int {
+                $cmp = $usageCounts[$a] <=> $usageCounts[$b];
+                if ($cmp !== 0) {
+                    return $cmp;
+                }
+                return array_sum($pairCounts[$a]) <=> array_sum($pairCounts[$b]);
+            });
 
-            while (count($bet) < $pick) {
-                $bestCandidate = null;
-                $lowestCost = PHP_INT_MAX;
+            $bestTicket = null;
+            $bestTicketCost = PHP_INT_MAX;
 
-                foreach ($available as $num) {
-                    if (in_array($num, $bet, true)) {
-                        continue;
-                    }
+            for ($trial = 0; $trial < $trialsPerTicket; $trial++) {
+                // Wybierz ziarno (seed) rotując po najrzadziej użytych liczbach
+                $seedPoolSize = max(3, min($poolSize, (int) ceil($poolSize * 0.45)));
+                $seedIdx = ($trial < $seedPoolSize) ? $trial : ($trial % $seedPoolSize);
+                $bet = [$sortedByUsage[$seedIdx]];
 
-                    $uCost = $usageCounts[$num] * 10;
-                    $pCost = 0;
-                    foreach ($bet as $selectedNum) {
-                        $pCost += $pairCounts[$num][$selectedNum] * 20;
-                    }
-
-                    $totalCost = $uCost + $pCost;
-                    if ($totalCost < $lowestCost) {
-                        $lowestCost = $totalCost;
-                        $bestCandidate = $num;
-                    }
+                $available = $pool;
+                if ($trial > 0) {
+                    shuffle($available);
                 }
 
-                if ($bestCandidate !== null) {
-                    $bet[] = $bestCandidate;
-                } else {
-                    break;
-                }
-            }
+                while (count($bet) < $pick) {
+                    $bestCandidate = null;
+                    $lowestStepCost = PHP_INT_MAX;
+                    $betLen = count($bet);
 
-            sort($bet);
-
-            $isDup = false;
-            foreach ($results as $r) {
-                if ($r === $bet) {
-                    $isDup = true;
-                    break;
-                }
-            }
-
-            if (!$isDup) {
-                $results[] = $bet;
-                foreach ($bet as $i => $num1) {
-                    $usageCounts[$num1]++;
-                    foreach ($bet as $j => $num2) {
-                        if ($i !== $j) {
-                            $pairCounts[$num1][$num2]++;
+                    foreach ($available as $num) {
+                        if (in_array($num, $bet, true)) {
+                            continue;
                         }
-                    }
-                }
-            } else {
-                if ($attempts % 10 === 0) {
-                    $backupPool = $pool;
-                    shuffle($backupPool);
-                    $randomBet = array_slice($backupPool, 0, $pick);
-                    sort($randomBet);
 
-                    $isRandDup = false;
-                    foreach ($results as $r) {
-                        if ($r === $randomBet) {
-                            $isRandDup = true;
-                            break;
+                        // 1-subset cost (Bucket Balance)
+                        $uCost = $usageCounts[$num] * 60;
+
+                        // 2-subset cost (Pair coverage)
+                        $pCost = 0;
+                        for ($i = 0; $i < $betLen; $i++) {
+                            $s = $bet[$i];
+                            $pc = $pairCounts[$num][$s];
+                            // Duża kara za wielokrotne powielanie tej samej pary, zerowy koszt dla nowej pary
+                            $pCost += ($pc === 0) ? 0 : ($pc * 220 + 80);
                         }
-                    }
 
-                    if (!$isRandDup) {
-                        $results[] = $randomBet;
-                        foreach ($randomBet as $i => $num1) {
-                            $usageCounts[$num1]++;
-                            foreach ($randomBet as $j => $num2) {
-                                if ($i !== $j) {
-                                    $pairCounts[$num1][$num2]++;
+                        // 3-subset cost (Triplet t=3 Set-Cover Guarantee)
+                        $tCost = 0;
+                        if ($trackTriplets && $betLen >= 2) {
+                            for ($i = 0; $i < $betLen - 1; $i++) {
+                                for ($j = $i + 1; $j < $betLen; $j++) {
+                                    $tk = $this->tripletKey($num, $bet[$i], $bet[$j]);
+                                    $tc = $tripletCounts[$tk] ?? 0;
+                                    // Ogromny priorytet dla jeszcze NIEPOKRYTYCH trójek (tc === 0 -> koszt 0)
+                                    $tCost += ($tc === 0) ? 0 : ($tc * 950 + 350);
                                 }
                             }
+                        }
+
+                        $stepCost = $uCost + $pCost + $tCost;
+                        if ($stepCost < $lowestStepCost) {
+                            $lowestStepCost = $stepCost;
+                            $bestCandidate = $num;
+                        }
+                    }
+
+                    if ($bestCandidate !== null) {
+                        $bet[] = $bestCandidate;
+                    } else {
+                        break;
+                    }
+                }
+
+                sort($bet);
+                if (count($bet) < $pick) {
+                    continue;
+                }
+
+                // 1-opt Local Search (Kempe-style single element swap) maksymalizujący pokrycie nowych trójek i par
+                if ($enableOneOpt) {
+                    $bet = $this->refineTicketOneOpt($bet, $pool, $seenBets, $usageCounts, $pairCounts, $tripletCounts);
+                }
+
+                $betKey = implode('-', $bet);
+                if (isset($seenBets[$betKey])) {
+                    continue;
+                }
+
+                $ticketCost = $this->evaluateTicketWheelingCost($bet, $usageCounts, $pairCounts, $tripletCounts, $trackTriplets);
+                if ($ticketCost < $bestTicketCost) {
+                    $bestTicketCost = $ticketCost;
+                    $bestTicket = $bet;
+
+                    if ($ticketCost === 0) {
+                        break;
+                    }
+                }
+            }
+
+            // Fallback, jeśli wszystkie próby turniejowe trafiły na istniejące już kombinacje
+            if ($bestTicket === null) {
+                $bestTicket = $this->findUnseenCombination($pool, $pick, $seenBets);
+            }
+
+            if ($bestTicket === null) {
+                break;
+            }
+
+            $betKey = implode('-', $bestTicket);
+            $seenBets[$betKey] = true;
+            $results[] = $bestTicket;
+
+            $bLen = count($bestTicket);
+            for ($i = 0; $i < $bLen; $i++) {
+                $n1 = $bestTicket[$i];
+                $usageCounts[$n1]++;
+                for ($j = $i + 1; $j < $bLen; $j++) {
+                    $n2 = $bestTicket[$j];
+                    $pairCounts[$n1][$n2]++;
+                    $pairCounts[$n2][$n1]++;
+                    if ($trackTriplets) {
+                        for ($k = $j + 1; $k < $bLen; $k++) {
+                            $tk = sprintf('%d-%d-%d', $n1, $n2, $bestTicket[$k]);
+                            $tripletCounts[$tk] = ($tripletCounts[$tk] ?? 0) + 1;
                         }
                     }
                 }
@@ -324,6 +393,230 @@ class BetGeneratorService
         }
 
         return $results;
+    }
+
+    /**
+     * Oblicza dokładne pokrycie podzbiorów 2-elementowych (par) i 3-elementowych (trójek)
+     * dla wygenerowanego systemu skróconego (t-Design Coverage Metrics).
+     *
+     * @param array<int> $pool
+     * @param array<int, array<int>> $bets
+     * @return array{
+     *     pairs_covered: int,
+     *     pairs_total: int,
+     *     pairs_coverage_pct: float,
+     *     triplets_covered: int,
+     *     triplets_total: int,
+     *     triplets_coverage_pct: float
+     * }
+     */
+    public function calculateSubsetsCoverage(array $pool, array $bets): array
+    {
+        $pool = array_values(array_unique(array_map('intval', $pool)));
+        $poolSize = count($pool);
+        $inPool = array_fill_keys($pool, true);
+
+        $pairsTotal = (int) $this->countCombinations($poolSize, 2);
+        $tripletsTotal = (int) $this->countCombinations($poolSize, 3);
+
+        $coveredPairs = [];
+        $coveredTriplets = [];
+
+        foreach ($bets as $bet) {
+            $valid = [];
+            foreach ($bet as $n) {
+                $n = (int) $n;
+                if (isset($inPool[$n])) {
+                    $valid[] = $n;
+                }
+            }
+            $valid = array_values(array_unique($valid));
+            sort($valid);
+            $len = count($valid);
+
+            for ($i = 0; $i < $len; $i++) {
+                for ($j = $i + 1; $j < $len; $j++) {
+                    $coveredPairs[sprintf('%d-%d', $valid[$i], $valid[$j])] = true;
+                    for ($k = $j + 1; $k < $len; $k++) {
+                        $coveredTriplets[sprintf('%d-%d-%d', $valid[$i], $valid[$j], $valid[$k])] = true;
+                    }
+                }
+            }
+        }
+
+        $pCov = count($coveredPairs);
+        $tCov = count($coveredTriplets);
+
+        return [
+            'pairs_covered' => $pCov,
+            'pairs_total' => $pairsTotal,
+            'pairs_coverage_pct' => $pairsTotal > 0 ? round(($pCov / $pairsTotal) * 100, 2) : 100.0,
+            'triplets_covered' => $tCov,
+            'triplets_total' => $tripletsTotal,
+            'triplets_coverage_pct' => $tripletsTotal > 0 ? round(($tCov / $tripletsTotal) * 100, 2) : 100.0,
+        ];
+    }
+
+    /**
+     * Jednokrokowa wymiana 1-opt (Kempe swap): sprawdza, czy podmiana jednej liczby w kuponie
+     * na inną z puli zmniejsza koszt pokrycia (czyli pokrywa więcej dotąd niepokrytych trójek/par).
+     *
+     * @param array<int> $bet
+     * @param array<int> $pool
+     * @param array<string, bool> $seenBets
+     * @param array<int, int> $usageCounts
+     * @param array<int, array<int, int>> $pairCounts
+     * @param array<string, int> $tripletCounts
+     * @return array<int>
+     */
+    private function refineTicketOneOpt(
+        array $bet,
+        array $pool,
+        array $seenBets,
+        array $usageCounts,
+        array $pairCounts,
+        array $tripletCounts
+    ): array {
+        $currentCost = $this->evaluateTicketWheelingCost($bet, $usageCounts, $pairCounts, $tripletCounts, true);
+        if ($currentCost === 0) {
+            return $bet;
+        }
+
+        $outsidePool = array_values(array_diff($pool, $bet));
+        $pick = count($bet);
+        $bestBet = $bet;
+        $bestCost = $currentCost;
+
+        for ($pos = 0; $pos < $pick; $pos++) {
+            $removed = $bet[$pos];
+            foreach ($outsidePool as $replacement) {
+                if ($usageCounts[$replacement] > $usageCounts[$removed] + 1) {
+                    continue;
+                }
+                $candidate = $bet;
+                $candidate[$pos] = $replacement;
+                sort($candidate);
+
+                $key = implode('-', $candidate);
+                if (isset($seenBets[$key])) {
+                    continue;
+                }
+
+                $cost = $this->evaluateTicketWheelingCost($candidate, $usageCounts, $pairCounts, $tripletCounts, true);
+                if ($cost < $bestCost) {
+                    $bestCost = $cost;
+                    $bestBet = $candidate;
+                }
+            }
+        }
+
+        return $bestBet;
+    }
+
+    /**
+     * Całkowita funkcja kosztu pokrycia (im niższa, tym więcej nowych trójek i par pokrywa kupon).
+     *
+     * @param array<int> $bet
+     * @param array<int, int> $usageCounts
+     * @param array<int, array<int, int>> $pairCounts
+     * @param array<string, int> $tripletCounts
+     */
+    private function evaluateTicketWheelingCost(
+        array $bet,
+        array $usageCounts,
+        array $pairCounts,
+        array $tripletCounts,
+        bool $trackTriplets
+    ): int {
+        $cost = 0;
+        $len = count($bet);
+
+        for ($i = 0; $i < $len; $i++) {
+            $n1 = $bet[$i];
+            $cost += $usageCounts[$n1] * 60;
+
+            for ($j = $i + 1; $j < $len; $j++) {
+                $n2 = $bet[$j];
+                $pc = $pairCounts[$n1][$n2];
+                if ($pc > 0) {
+                    $cost += $pc * 220 + 80;
+                }
+
+                if ($trackTriplets) {
+                    for ($k = $j + 1; $k < $len; $k++) {
+                        $tk = sprintf('%d-%d-%d', $n1, $n2, $bet[$k]);
+                        $tc = $tripletCounts[$tk] ?? 0;
+                        if ($tc > 0) {
+                            $cost += $tc * 950 + 350;
+                        }
+                    }
+                }
+            }
+        }
+
+        return $cost;
+    }
+
+    private function tripletKey(int $a, int $b, int $c): string
+    {
+        if ($a > $b) {
+            [$a, $b] = [$b, $a];
+        }
+        if ($b > $c) {
+            [$b, $c] = [$c, $b];
+        }
+        if ($a > $b) {
+            [$a, $b] = [$b, $a];
+        }
+
+        return sprintf('%d-%d-%d', $a, $b, $c);
+    }
+
+    /**
+     * @param array<int> $pool
+     * @param array<string, bool> $seenBets
+     * @return array<int>|null
+     */
+    private function findUnseenCombination(array $pool, int $pick, array $seenBets): ?array
+    {
+        for ($i = 0; $i < 1000; $i++) {
+            $backup = $pool;
+            shuffle($backup);
+            $cand = array_slice($backup, 0, $pick);
+            sort($cand);
+            if (!isset($seenBets[implode('-', $cand)])) {
+                return $cand;
+            }
+        }
+
+        foreach ($this->generateCombinations($pool, $pick) as $comb) {
+            sort($comb);
+            if (!isset($seenBets[implode('-', $comb)])) {
+                return $comb;
+            }
+        }
+
+        return null;
+    }
+
+    private function countCombinations(int $n, int $k): float
+    {
+        if ($k < 0 || $k > $n) {
+            return 0.0;
+        }
+        if ($k === 0 || $k === $n) {
+            return 1.0;
+        }
+        if ($k > $n / 2) {
+            $k = $n - $k;
+        }
+
+        $res = 1.0;
+        for ($i = 1; $i <= $k; $i++) {
+            $res = $res * ($n - $k + $i) / $i;
+        }
+
+        return round($res);
     }
 
     // === WERYFIKATOR POKRYCIA (COVERAGE CHECKER) ===

@@ -41,7 +41,7 @@ class LlmClientResolverTest extends TestCase
     {
         $client = $this->resolver->resolve();
         $this->assertSame('gemini', $client->getProviderName());
-        $this->assertSame('gemini-3.7-flash', $client->getModel());
+        $this->assertSame('gemini-3.8-flash', $client->getModel());
     }
 
     public function testResolvesClaudeWithModel(): void
@@ -88,7 +88,7 @@ class LlmClientResolverTest extends TestCase
         $this->assertArrayHasKey('openai', $catalog);
         $this->assertArrayHasKey('deepseek', $catalog);
 
-        $this->assertSame('gemini-3.7-flash', $catalog['gemini']['defaultModel']);
+        $this->assertSame('gemini-3.8-flash', $catalog['gemini']['defaultModel']);
         $this->assertSame('claude-3-7-sonnet-20250219', $catalog['claude']['defaultModel']);
         $this->assertSame('gpt-4o', $catalog['openai']['defaultModel']);
         $this->assertSame('deepseek-chat', $catalog['deepseek']['defaultModel']);

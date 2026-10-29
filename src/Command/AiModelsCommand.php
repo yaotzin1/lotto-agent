@@ -112,7 +112,7 @@ class AiModelsCommand extends Command
 
         $io->section('Przykłady Użycia Flag CLI');
         $io->listing([
-            'Wybór Gemini:  app:lotto-agent --provider=gemini --model=gemini-3.7-flash',
+            'Wybór Gemini:  app:lotto-agent --provider=gemini --model=gemini-3.8-flash',
             'Wybór Claude:  app:lotto-agent --provider=claude --model=claude-3-opus-20240229',
             'Wybór OpenAI:  app:lotto-stats --ai --provider=openai --model=gpt-4o',
             'Wybór DeepSeek: app:lotto-stats --ai --provider=deepseek --model=deepseek-chat',
