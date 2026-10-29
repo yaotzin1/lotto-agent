@@ -72,22 +72,27 @@ class LlmClientResolver
         return [
             'gemini' => [
                 'displayName' => 'Google Gemini',
-                'defaultModel' => 'gemini-3.7-flash',
+                'defaultModel' => 'gemini-3.8-flash',
                 'models' => [
+                    'gemini-3.8-flash' => [
+                        'name' => 'Gemini 3.8 Flash',
+                        'description' => 'Latest generation high-throughput reasoning and function calling model',
+                        'recommendedFor' => 'Default daily usage, ReAct agent loops & fast tool execution',
+                    ],
                     'gemini-3.7-flash' => [
                         'name' => 'Gemini 3.7 Flash',
                         'description' => 'Fast, modern multi-token reasoning and function calling',
-                        'recommendedFor' => 'Default daily usage & ReAct agent loops',
+                        'recommendedFor' => 'Reliable fallback for ReAct agent loops',
+                    ],
+                    'gemini-3.1-pro-preview' => [
+                        'name' => 'Gemini 3.1 Pro Preview',
+                        'description' => 'Next-generation Pro preview model for complex reasoning',
+                        'recommendedFor' => 'Deep combinatorial analysis & k-clique synergy',
                     ],
                     'gemini-2.5-pro' => [
                         'name' => 'Gemini 2.5 Pro',
                         'description' => 'High-capacity analytical reasoning',
                         'recommendedFor' => 'Deep combinatorial analysis & large pools',
-                    ],
-                    'gemini-3.8-flash' => [
-                        'name' => 'Gemini 3.8 Flash',
-                        'description' => 'High-throughput next-generation Flash model',
-                        'recommendedFor' => 'Fastest live tool executions',
                     ],
                     'gemini-2.5-flash' => [
                         'name' => 'Gemini 2.5 Flash',
@@ -96,13 +101,14 @@ class LlmClientResolver
                     ],
                 ],
                 'fallbacks' => [
+                    'gemini-3.8-flash',
                     'gemini-3.7-flash',
                     'gemini-3.6-flash',
                     'gemini-3.5-flash',
+                    'gemini-2.5-pro',
                     'gemini-2.5-flash',
                     'gemini-flash-latest',
                     'gemini-pro-latest',
-                    'gemini-2.5-pro',
                     'gemini-3.5-flash-lite',
                 ],
             ],

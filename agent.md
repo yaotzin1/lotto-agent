@@ -159,9 +159,10 @@ Modele LLM różnią się architekturą i specyfikacją. W analizie statystyczne
 | | `gpt-4-turbo` | **GPT-4 Turbo** | Stabilny model o dużej precyzji weryfikacyjnej. |
 | **`deepseek`** | `deepseek-reasoner` | **DeepSeek-R1** | **Dedykowany model matematyczny CoT.** Generuje rozbudowane łańcuchy dowodowe przed podjęciem decyzji, rygorystycznie testując hipotezy o trendach. |
 | | `deepseek-chat` *(domyślny)* | **DeepSeek-V3** | Wysoce wydajny, zoptymalizowany model do szybkiej analizy wielkich zbiorów danych. |
-| **`gemini`** | `gemini-3.7-flash` *(domyślny)* | **Gemini 3.7 Flash** | Najnowszy model Google o doskonałym stosunku szybkości do głębi myślenia, natywne wsparcie w pętli agenta. |
+| **`gemini`** | `gemini-3.8-flash` *(domyślny)* | **Gemini 3.8 Flash** | Najnowszy model Google o najwyższej przepustowości i głębi myślenia, natywne wsparcie w pętli agenta. |
+| | `gemini-3.7-flash` | **Gemini 3.7 Flash** | Szybki model wielotokenowy o wysokim stosunku szybkości do jakości. |
+| | `gemini-3.1-pro-preview` | **Gemini 3.1 Pro Preview** | Zaawansowany model analityczny Pro nowej generacji. |
 | | `gemini-2.5-pro` | **Gemini 2.5 Pro** | Głębokie wnioskowanie analityczne, idealne dla dużych puli liczb (np. bębna 49 liczb). |
-| | `gemini-3.8-flash` | **Gemini 3.8 Flash** | Eksperymentalny model ultra-szybki. |
 | | `gemini-2.5-flash` | **Gemini 2.5 Flash** | Stabilny, produkcyjny model ekonomiczny. |
 
 ### Automatyczne łańcuchy awaryjne (Fallback Chains)
@@ -169,7 +170,7 @@ Wszystkie klienty implementują mechanizm kaskady awaryjnej. W przypadku niedost
 - **Claude:** `claude-3-7-sonnet-20250219` ➔ `claude-3-5-sonnet-20241022` ➔ `claude-3-opus-20240229` ➔ `claude-3-5-haiku-20241022`
 - **OpenAI:** `gpt-4o` ➔ `gpt-4o-mini` ➔ `gpt-4-turbo`
 - **DeepSeek:** `deepseek-chat` ➔ `deepseek-reasoner`
-- **Gemini:** `gemini-3.7-flash` ➔ `gemini-3.6-flash` ➔ `gemini-3.5-flash` ➔ `gemini-2.5-flash` ➔ `gemini-flash-latest` ➔ `gemini-pro-latest` ➔ `gemini-2.5-pro`
+- **Gemini:** `gemini-3.8-flash` ➔ `gemini-3.7-flash` ➔ `gemini-3.6-flash` ➔ `gemini-3.5-flash` ➔ `gemini-2.5-pro` ➔ `gemini-2.5-flash` ➔ `gemini-flash-latest` ➔ `gemini-pro-latest`
 
 ---
 

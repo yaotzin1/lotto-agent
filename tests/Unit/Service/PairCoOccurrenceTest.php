@@ -116,4 +116,56 @@ class PairCoOccurrenceTest extends TestCase
             'Bezpośredni sąsiad powinien mieć wyższe affinity niż liczba oddalona o 3'
         );
     }
+
+    public function testRecentCoOccurrenceOutranksStaleCoOccurrence(): void
+    {
+        $pool = range(1, 30);
+        $draws = [];
+
+        // Pierwsze 5 (najnowszych) losowań zawiera parę (4, 14)
+        for ($i = 0; $i < 5; $i++) {
+            $draws[] = [4, 14, 1 + $i, 10 + $i, 20 + $i];
+        }
+        // Środkowe 15 losowań zawiera różne tło
+        for ($i = 0; $i < 15; $i++) {
+            $draws[] = [1 + ($i % 3), 8 + ($i % 4), 16 + ($i % 4), 22 + ($i % 4), 27 + ($i % 3)];
+        }
+        // Ostatnie 5 (najstarszych) losowań zawiera parę (5, 15) dokładnie tyle samo razy (5x)
+        for ($i = 0; $i < 5; $i++) {
+            $draws[] = [5, 15, 2 + $i, 11 + $i, 21 + $i];
+        }
+
+        $matrix = $this->service->buildPairAffinityMatrix($pool, array_fill_keys($pool, 5), $draws);
+
+        self::assertGreaterThan(
+            $matrix[5][15],
+            $matrix[4][14],
+            'Para z najnowszych losowań (4,14) musi mieć wyższe affinity (EMA decay) niż para (5,15) sprzed 20 sesji'
+        );
+    }
+
+    public function testTripletAffinityMapCapturesThreeCliquesAndScoresBet(): void
+    {
+        $pool = range(1, 30);
+        $draws = [];
+        for ($i = 0; $i < 25; $i++) {
+            // Trójka (7, 17, 27) pada razem w 10 losowaniach
+            if ($i < 10) {
+                $draws[] = [7, 17, 27, 1 + ($i % 5), 11 + ($i % 5), 21 + ($i % 5)];
+            } else {
+                $draws[] = [2 + ($i % 5), 8 + ($i % 5), 14 + ($i % 5), 19 + ($i % 5), 24 + ($i % 5), 29];
+            }
+        }
+
+        $tripletMap = $this->service->buildTripletAffinityMap($pool, $draws);
+
+        self::assertNotEmpty($tripletMap);
+        self::assertArrayHasKey('7-17-27', $tripletMap);
+        self::assertSame(60.0, $tripletMap['7-17-27']);
+
+        $scoreWithClique = $this->service->calculateTripletSynergyScore([3, 7, 12, 17, 22, 27], $tripletMap);
+        $scoreWithoutClique = $this->service->calculateTripletSynergyScore([1, 6, 13, 18, 23, 30], $tripletMap);
+
+        self::assertGreaterThan($scoreWithoutClique, $scoreWithClique);
+    }
 }

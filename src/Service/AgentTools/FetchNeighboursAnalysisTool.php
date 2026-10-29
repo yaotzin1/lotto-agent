@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Service\AgentTools;
 
+use App\Service\DrawHistoryProvider;
 use App\Service\GameRegistryService;
 use App\Service\LottoApiClient;
 
@@ -11,7 +12,8 @@ class FetchNeighboursAnalysisTool implements LottoToolInterface
 {
     public function __construct(
         private readonly LottoApiClient $lottoApiClient,
-        private readonly GameRegistryService $gameRegistryService
+        private readonly GameRegistryService $gameRegistryService,
+        private readonly ?DrawHistoryProvider $drawHistoryProvider = null
     ) {
     }
 
@@ -63,50 +65,92 @@ class FetchNeighboursAnalysisTool implements LottoToolInterface
 
         $dateFrom = $this->gameRegistryService->calculateDateFromForSessions($game, $sessions, $months);
         $stats = $this->lottoApiClient->getHotColdNumbers($game, $dateFrom);
+        $history = $this->drawHistoryProvider?->getHistory($game, max($sessions, 20));
+        $draws = isset($history['draws']) && is_array($history['draws'])
+            ? array_values(array_filter(array_map(static fn(array $d): array => $d['main'] ?? [], $history['draws'])))
+            : [];
 
-        if (!$stats) {
+        if (!$stats && $draws === []) {
             return json_encode(['error' => 'Brak danych statystycznych do analizy sąsiedztwa i klastrów']);
         }
 
         $freqDesc = $stats['sorted_by_freq_desc'] ?? [];
         $freqAsc = $stats['sorted_by_freq_asc'] ?? [];
 
-        // 1. Wygrane / Gorące kotwice (Anchors)
-        $winningAnchors = array_keys(array_slice($freqDesc, 0, max($pickCount + 2, 8), true));
+        if ($freqDesc === [] && $draws !== []) {
+            $counts = array_fill(1, $maxNum, 0);
+            foreach ($draws as $draw) {
+                foreach ($draw as $n) {
+                    if ($n >= 1 && $n <= $maxNum) {
+                        $counts[$n]++;
+                    }
+                }
+            }
+            $freqDesc = $counts;
+            arsort($freqDesc);
+            $freqAsc = $counts;
+            asort($freqAsc);
+        }
 
-        // 2. Bezpośrednie powtórki (20% udziału)
+        $hasRealDraws = $draws !== [];
+        $latestDraw = $hasRealDraws ? $draws[0] : [];
+
+        // 1. Wygrane kotwice (Anchors): z rzeczywistego ostatniego losowania (jeśli dostępne) + najsilniejsze z okna
+        if ($hasRealDraws) {
+            $anchorTarget = max($pickCount + 2, 8);
+            $winningAnchors = $latestDraw;
+            foreach (array_keys($freqDesc) as $hotNum) {
+                if (count($winningAnchors) >= $anchorTarget) {
+                    break;
+                }
+                if (!in_array((int) $hotNum, $winningAnchors, true)) {
+                    $winningAnchors[] = (int) $hotNum;
+                }
+            }
+        } else {
+            $winningAnchors = array_keys(array_slice($freqDesc, 0, max($pickCount + 2, 8), true));
+        }
+
+        // 2. Bezpośrednie powtórki (20% udziału) - priorytet dla liczb z ostatniego losowania
         $repeatCandidates = [];
-        foreach (array_slice($winningAnchors, 0, $pickCount) as $num) {
+        $repeatSource = $hasRealDraws ? $latestDraw : array_slice($winningAnchors, 0, $pickCount);
+        foreach ($repeatSource as $num) {
             $repeatCandidates[] = [
                 'number' => $num,
                 'occurrences' => $freqDesc[$num] ?? 0,
+                'in_latest_draw' => $hasRealDraws,
                 'role' => 'direct_repeat',
             ];
         }
+        usort($repeatCandidates, static fn(array $a, array $b): int => $b['occurrences'] <=> $a['occurrences']);
 
         // 3. Sąsiedzi (+1 / -1) wokół wygranych kotwic (60% udziału)
         $neighbourCandidates = [];
         $neighbourMap = [];
 
         foreach ($winningAnchors as $anchor) {
+            $isLatestAnchor = in_array($anchor, $latestDraw, true);
             $left = $anchor - 1;
             $right = $anchor + 1;
 
             if ($left >= 1) {
                 $neighbourMap[$left]['anchors'][] = $anchor;
+                $neighbourMap[$left]['latest_anchors_count'] = ($neighbourMap[$left]['latest_anchors_count'] ?? 0) + ($isLatestAnchor ? 1 : 0);
                 $neighbourMap[$left]['occurrences'] = $freqDesc[$left] ?? 0;
             }
             if ($right <= $maxNum) {
                 $neighbourMap[$right]['anchors'][] = $anchor;
+                $neighbourMap[$right]['latest_anchors_count'] = ($neighbourMap[$right]['latest_anchors_count'] ?? 0) + ($isLatestAnchor ? 1 : 0);
                 $neighbourMap[$right]['occurrences'] = $freqDesc[$right] ?? 0;
             }
         }
 
         foreach ($neighbourMap as $num => $data) {
             $anchorCount = count(array_unique($data['anchors']));
+            $latestAnchorBonus = ($data['latest_anchors_count'] ?? 0) * 6;
             $occurrences = $data['occurrences'];
-            // Wynik klastrowy: liczba przyległych wygranych * 10 + częstotliwość
-            $clusterScore = ($anchorCount * 10) + $occurrences;
+            // Wynik klastrowy: liczba przyległych wygranych * 10 + premia za ostatnie losowanie + częstotliwość
+            $clusterScore = ($anchorCount * 10) + $latestAnchorBonus + $occurrences;
 
             $neighbourCandidates[] = [
                 'number' => $num,
@@ -121,7 +165,12 @@ class FetchNeighboursAnalysisTool implements LottoToolInterface
 
         // 4. Uśpione liczby izolowane (20% udziału) - odległość > 2 od wszystkich kotwic wygranych
         $isolatedColdCandidates = [];
-        foreach (array_keys($freqAsc) as $num) {
+        $coldOrder = array_keys($freqAsc);
+        if ($coldOrder === []) {
+            $coldOrder = range(1, $maxNum);
+        }
+        foreach ($coldOrder as $num) {
+            $num = (int) $num;
             $isNearAnchor = false;
             foreach ($winningAnchors as $anchor) {
                 if (abs($num - $anchor) <= 2) {
@@ -131,12 +180,27 @@ class FetchNeighboursAnalysisTool implements LottoToolInterface
             }
 
             if (!$isNearAnchor) {
-                $isolatedColdCandidates[] = [
+                $drawsSinceLast = null;
+                if ($hasRealDraws) {
+                    foreach ($draws as $idx => $d) {
+                        if (in_array($num, $d, true)) {
+                            $drawsSinceLast = $idx;
+                            break;
+                        }
+                    }
+                    $drawsSinceLast ??= count($draws);
+                }
+
+                $entry = [
                     'number' => $num,
-                    'occurrences' => $freqAsc[$num] ?? 0,
+                    'occurrences' => $freqAsc[$num] ?? ($freqDesc[$num] ?? 0),
                     'role' => 'isolated_cold_outlier',
                     'zone' => sprintf('Strefa %d-%d', (int)floor(($num - 1) / 10) * 10 + 1, min(((int)floor(($num - 1) / 10) + 1) * 10, $maxNum)),
                 ];
+                if ($drawsSinceLast !== null) {
+                    $entry['draws_since_last_seen'] = $drawsSinceLast;
+                }
+                $isolatedColdCandidates[] = $entry;
             }
 
             if (count($isolatedColdCandidates) >= 8) {
@@ -146,7 +210,9 @@ class FetchNeighboursAnalysisTool implements LottoToolInterface
 
         return json_encode([
             'game' => $game,
-            'draws_analyzed' => $stats['draws_analyzed'] ?? $sessions,
+            'source' => $hasRealDraws ? 'draw_history' : 'frequency_fallback',
+            'draws_analyzed' => $stats['draws_analyzed'] ?? ($hasRealDraws ? count($draws) : $sessions),
+            'most_recent_draw' => $latestDraw,
             'winning_anchors' => $winningAnchors,
             'syndicate_strategy_formula' => [
                 'neighbours_quota' => '60%',

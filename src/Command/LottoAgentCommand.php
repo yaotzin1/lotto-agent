@@ -43,7 +43,7 @@ class LottoAgentCommand extends Command
         $this->addOption('strategy', 'st', InputOption::VALUE_REQUIRED, 'Strategia doboru liczb przez AI (syndicate/balanced/aggressive/decades)');
         $this->addOption('cover-decades', 'cd', InputOption::VALUE_NONE, 'Wymuś równomierne pokrycie wszystkich dekad');
         $this->addOption('provider', 'pv', InputOption::VALUE_REQUIRED, 'Wybór dostawcy AI: gemini, claude, openai, deepseek');
-        $this->addOption('model', 'md', InputOption::VALUE_REQUIRED, 'Model AI (np. claude-3-7-sonnet-20250219, gpt-4o, gemini-3.7-flash)');
+        $this->addOption('model', 'md', InputOption::VALUE_REQUIRED, 'Model AI (np. gemini-3.8-flash, gemini-2.5-pro, claude-3-7-sonnet-20250219, gpt-4o)');
         $this->addOption('json-output', 'j', InputOption::VALUE_NONE, 'Zwróć odpowiedź w formacie JSON');
     }
 

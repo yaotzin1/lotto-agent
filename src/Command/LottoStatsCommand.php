@@ -48,7 +48,7 @@ class LottoStatsCommand extends Command
         $this->addOption('full-coverage', null, InputOption::VALUE_OPTIONAL, 'Wymuś 100% pokrycie puli wejściowej (true/false)', 'true');
         $this->addOption('ai', null, InputOption::VALUE_NONE, 'Dołącz strategiczną analizę i komentarz AI (Google Gemini, Claude, OpenAI, DeepSeek)');
         $this->addOption('provider', 'pv', InputOption::VALUE_REQUIRED, 'Wybór dostawcy AI do analizy: gemini, claude, openai, deepseek');
-        $this->addOption('model', 'md', InputOption::VALUE_REQUIRED, 'Model AI (np. claude-3-7-sonnet-20250219, gpt-4o, gemini-3.7-flash)');
+        $this->addOption('model', 'md', InputOption::VALUE_REQUIRED, 'Model AI (np. gemini-3.8-flash, gemini-2.5-pro, claude-3-7-sonnet-20250219, gpt-4o)');
         $this->addOption('json-output', 'j', InputOption::VALUE_NONE, 'Zwróć wynik w formacie JSON');
     }
 

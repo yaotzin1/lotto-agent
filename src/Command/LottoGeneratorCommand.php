@@ -78,7 +78,7 @@ class LottoGeneratorCommand extends Command
         $this->addOption('neighbours', null, InputOption::VALUE_NONE, 'Alias dla --with-neighbours');
         $this->addOption('neighbours-ratio', 'nr', InputOption::VALUE_REQUIRED, 'Docelowy procentowy udział sąsiadów w puli (np. 60, 60%, 0.6 - domyślnie: 60%)', '60%');
         $this->addOption('provider', 'pv', InputOption::VALUE_REQUIRED, 'Wybór dostawcy AI: gemini, claude, openai, deepseek');
-        $this->addOption('model', 'md', InputOption::VALUE_REQUIRED, 'Model AI (np. claude-3-7-sonnet-20250219, gpt-4o, gemini-3.7-flash)');
+        $this->addOption('model', 'md', InputOption::VALUE_REQUIRED, 'Model AI (np. gemini-3.8-flash, gemini-2.5-pro, claude-3-7-sonnet-20250219, gpt-4o)');
     }
 
     /**

@@ -258,9 +258,10 @@ docker compose run --rm app php bin/console app:ai-models --provider=gemini --li
 | | `gpt-4-turbo` | **GPT-4 Turbo** | High context accuracy fallback | Historical stability |
 | **`deepseek`** (DeepSeek) | `deepseek-chat` *(default)* | **DeepSeek-V3** | Open-weight state-of-the-art model for logic and text | Budget-friendly high-performance data processing |
 | | `deepseek-reasoner` | **DeepSeek-R1** | Dedicated mathematical reasoning and verification model | Rigorous probability evaluation & trend hypothesis |
-| **`gemini`** (Google) | `gemini-3.7-flash` *(default)* | **Gemini 3.7 Flash** | Fast, high-reasoning multimodal engine with function calling | Default daily usage & ReAct agent loops |
+| **`gemini`** (Google) | `gemini-3.8-flash` *(default)* | **Gemini 3.8 Flash** | High-throughput next-generation Flash model with function calling | Default daily usage, ReAct agent loops & fast tool executions |
+| | `gemini-3.7-flash` | **Gemini 3.7 Flash** | Fast, high-reasoning multimodal engine with function calling | Reliable fallback for ReAct agent loops |
+| | `gemini-3.1-pro-preview` | **Gemini 3.1 Pro Preview** | Next-generation Pro preview reasoning engine | Deep combinatorial analysis & k-clique synergy |
 | | `gemini-2.5-pro` | **Gemini 2.5 Pro** | High-capacity analytical reasoning | Deep combinatorial analysis & large pools |
-| | `gemini-3.8-flash` | **Gemini 3.8 Flash** | High-throughput next-generation Flash model | Fastest live tool executions |
 | | `gemini-2.5-flash` | **Gemini 2.5 Flash** | Stable production flash model | Cost-effective analysis |
 
 > **Automated Fallback Mechanism**: If a provider API endpoint returns a 404 (model deprecated or not available in region) or 429 (rate-limit quota exceeded), the client automatically cascades down the provider's fallback chain to ensure uninterrupted execution.

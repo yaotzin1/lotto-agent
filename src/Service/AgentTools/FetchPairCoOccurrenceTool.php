@@ -79,13 +79,29 @@ class FetchPairCoOccurrenceTool implements LottoToolInterface
     private function fromDrawHistory(string $game, array $draws, array $targetNumbers): array
     {
         $counts = [];
-        foreach ($draws as $draw) {
-            $n = count($draw);
+        $weightedCounts = [];
+        $tripletCounts = [];
+        $tripletWeighted = [];
+
+        foreach (array_values($draws) as $drawIdx => $draw) {
+            $sortedDraw = array_values(array_unique(array_map('intval', $draw)));
+            sort($sortedDraw);
+            $n = count($sortedDraw);
+            $weight = 1.0 + (0.6 * exp(-max(0, $drawIdx) / 15.0));
+
             for ($i = 0; $i < $n; $i++) {
                 for ($j = $i + 1; $j < $n; $j++) {
-                    $a = min($draw[$i], $draw[$j]);
-                    $b = max($draw[$i], $draw[$j]);
+                    $a = $sortedDraw[$i];
+                    $b = $sortedDraw[$j];
                     $counts[$a][$b] = ($counts[$a][$b] ?? 0) + 1;
+                    $weightedCounts[$a][$b] = ($weightedCounts[$a][$b] ?? 0.0) + $weight;
+
+                    for ($k = $j + 1; $k < $n; $k++) {
+                        $c = $sortedDraw[$k];
+                        $tKey = sprintf('%d-%d-%d', $a, $b, $c);
+                        $tripletCounts[$tKey] = ($tripletCounts[$tKey] ?? 0) + 1;
+                        $tripletWeighted[$tKey] = ($tripletWeighted[$tKey] ?? 0.0) + $weight;
+                    }
                 }
             }
         }
@@ -101,19 +117,51 @@ class FetchPairCoOccurrenceTool implements LottoToolInterface
                 $pairs[] = [
                     'pair' => [$a, $b],
                     'times_drawn_together' => $c,
+                    'recency_weighted_score' => round($weightedCounts[$a][$b] ?? (float) $c, 2),
                 ];
             }
         }
 
-        usort($pairs, fn($x, $y) => $y['times_drawn_together'] <=> $x['times_drawn_together']);
+        usort($pairs, static function (array $x, array $y): int {
+            $cmp = $y['times_drawn_together'] <=> $x['times_drawn_together'];
+            if ($cmp !== 0) {
+                return $cmp;
+            }
+            return $y['recency_weighted_score'] <=> $x['recency_weighted_score'];
+        });
+
+        $triplets = [];
+        foreach ($tripletCounts as $tKey => $c) {
+            if ($c < 2 && count($tripletCounts) > 15) {
+                continue;
+            }
+            $nums = array_map('intval', explode('-', $tKey));
+            if ($targetNumbers !== [] && array_intersect($nums, $targetNumbers) === []) {
+                continue;
+            }
+            $triplets[] = [
+                'triplet' => $nums,
+                'times_drawn_together' => $c,
+                'recency_weighted_score' => round($tripletWeighted[$tKey] ?? (float) $c, 2),
+            ];
+        }
+
+        usort($triplets, static function (array $x, array $y): int {
+            $cmp = $y['times_drawn_together'] <=> $x['times_drawn_together'];
+            if ($cmp !== 0) {
+                return $cmp;
+            }
+            return $y['recency_weighted_score'] <=> $x['recency_weighted_score'];
+        });
 
         return [
             'game' => $game,
             'source' => 'draw_history',
             'is_estimate' => false,
             'draws_analyzed' => count($draws),
-            'definition' => 'times_drawn_together = liczba losowan, w ktorych obie liczby padly razem',
+            'definition' => 'times_drawn_together = liczba losowan, w ktorych liczby padly razem (z waga swiezosci EMA)',
             'top_pairs' => array_slice($pairs, 0, 15),
+            'top_triplets' => array_slice($triplets, 0, 10),
             'target_numbers_checked' => $targetNumbers,
         ];
     }
