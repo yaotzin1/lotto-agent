@@ -11,7 +11,7 @@ use App\Service\LottoApiClient;
 class FetchPairCoOccurrenceTool implements LottoToolInterface
 {
     /** Ponizej tylu losowan statystyka par jest zbyt rzadka. */
-    private const MIN_DRAWS = 20;
+    private const MIN_DRAWS = 5;
 
     public function __construct(
         private readonly LottoApiClient $lottoApiClient,
@@ -44,6 +44,14 @@ class FetchPairCoOccurrenceTool implements LottoToolInterface
                     'items' => ['type' => 'INTEGER'],
                     'description' => 'Opcjonalna lista liczb do sprawdzania z kim najczęściej tworzą pary',
                 ],
+                'sessions' => [
+                    'type' => 'INTEGER',
+                    'description' => 'Liczba ostatnich losowań do analizy współwystępowania par (domyślnie 100)',
+                ],
+                'months' => [
+                    'type' => 'INTEGER',
+                    'description' => 'Liczba ostatnich miesięcy do analizy (alternatywa dla sessions)',
+                ],
             ],
             'required' => ['game'],
         ];
@@ -60,7 +68,13 @@ class FetchPairCoOccurrenceTool implements LottoToolInterface
             ? array_values(array_unique(array_map('intval', $args['target_numbers'])))
             : [];
 
-        $history = $this->drawHistoryProvider->getHistory($game, 100);
+        $sessions = isset($args['sessions']) && is_numeric($args['sessions'])
+            ? max(1, min((int) $args['sessions'], 500))
+            : (isset($args['months']) && is_numeric($args['months'])
+                ? $this->gameRegistryService->estimateSessionsForMonths($game, (int) $args['months'])
+                : 100);
+
+        $history = $this->drawHistoryProvider->getHistory($game, $sessions);
         $draws = array_map(static fn(array $d): array => $d['main'], $history['draws']);
 
         if (count($draws) >= self::MIN_DRAWS) {

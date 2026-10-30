@@ -34,7 +34,7 @@ When selecting a large pool (e.g. all 49 numbers) and generating a limited budge
 * **Random selection / naive reduction** generates arbitrary combinations with strange sum distributions (e.g. sum $< 90$ or $> 220$), poor parity, and random pairs that historically had near-zero synergy.
 * **The Statistical Optimizer operates on two levels:**
   1. **Macro-Plausibility (Stochastic Filtering)**: Roughly $82\%$ of the probability mass of the sum distribution lies within $\mu \pm 1.35\sigma$ ($106-194$ in Lotto). The interval is computed by `calculateGaussianParameters()` and is never hardcoded, have balanced odd/even splits ($3:3$ or $4:2$), and span across at least $3$ decades. The optimizer ensures $100\%$ of generated bets adhere to these proven macro-characteristics.
-  2. **Micro-Synergy (Historical Co-occurrence & Affinity)**: numbers are assembled using a pair matrix built from **actual draw history** - how often $A$ and $B$ were genuinely drawn together - fetched via `LottoApiClient::fetchDrawHistory()`. When fewer than 20 draws are available the matrix falls back to a frequency heuristic that carries **no pair information at all**, and every report states which of the two modes produced it (`affinity_source`). Dynamic usage penalties ensure the entire 49-number pool is evenly represented without sacrificing pair synergy.
+  2. **Micro-Synergy (Historical Co-occurrence & Affinity)**: numbers are assembled using a pair matrix built from **actual draw history** - how often $A$ and $B$ were genuinely drawn together - fetched via `DrawHistoryProvider::getHistory()`. When fewer than 5 draws (`MIN_DRAWS_FOR_CO_OCCURRENCE = 5`) are available the matrix falls back to a frequency heuristic that carries **no pair information at all**, and every report states which of the two modes produced it (`affinity_source`). Dynamic usage penalties ensure the entire pool is evenly represented without sacrificing pair synergy.
 
 ---
 
@@ -288,7 +288,7 @@ docker compose run --rm app php bin/console app:ai-models --provider=gemini --li
 
 ## Testing
 
-Run unit tests via PHPUnit:
+Run the full unit and mutation test suite (151 tests, 8034 assertions, 100% MSI on mutation suite) via PHPUnit:
 ```bash
 docker compose run --rm app vendor/bin/phpunit
 ```

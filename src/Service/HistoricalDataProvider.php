@@ -31,6 +31,8 @@ class HistoricalDataProvider
      * @return array{
      *     frequencies: array<int, int>,
      *     draws: array<int, array<int>>,
+     *     special_frequencies: array<int, int>,
+     *     special_draws: array<int, array<int>>,
      *     draws_analyzed: int|string,
      *     date_from: string,
      *     date_to: string,
@@ -38,9 +40,12 @@ class HistoricalDataProvider
      *     warning: ?string
      * }
      */
-    public function fetch(string $gameType, int $sessions, ?int $months = null): array
+    public function fetch(string $gameType, ?int $sessions = null, ?int $months = null): array
     {
-        $dateFrom = $this->gameRegistryService->calculateDateFromForSessions($gameType, $sessions, $months ?: 6);
+        $effectiveSessions = ($sessions !== null && $sessions > 0) ? $sessions : null;
+        $effectiveMonths = ($months !== null && $months > 0) ? $months : 6;
+
+        $dateFrom = $this->gameRegistryService->calculateDateFromForSessions($gameType, $effectiveSessions, $effectiveMonths);
         $dateTo = (new \DateTime())->format('Y-m-d\TH:i:s\Z');
 
         $stats = $this->lottoApiClient->getHotColdNumbers($gameType, $dateFrom);
@@ -78,9 +83,16 @@ class HistoricalDataProvider
             ];
         }
 
+        // Respektujemy jawnie przekazany parametr --sessions (lub --months przeliczony na sesje),
+        // zamiast nadpisywać go sztywnym minimum 50.
+        $historyLimit = $effectiveSessions
+            ?? (($months !== null && $months > 0)
+                ? $this->gameRegistryService->estimateSessionsForMonths($gameType, $months)
+                : 50);
+
         // Historia losowań jest opcjonalna: bez niej macierz par degraduje się
         // do heurystyki częstotliwościowej (i jest tak oznaczona w raporcie).
-        $history = $this->drawHistoryProvider->getHistory($gameType, max($sessions, 50));
+        $history = $this->drawHistoryProvider->getHistory($gameType, $historyLimit);
         $draws = array_map(static fn(array $d): array => $d['main'], $history['draws']);
         $specialDraws = [];
         foreach ($history['draws'] as $d) {

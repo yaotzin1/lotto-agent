@@ -1,6 +1,6 @@
 # Lotto Agent - AI Integration Guide
 
-Ten dokument opisuje warstwę AI aplikacji: agenta ReAct opartego o Google Gemini oraz
+Ten dokument opisuje warstwę AI aplikacji: agenta ReAct opartego o Google Gemini / Claude / OpenAI / DeepSeek oraz
 narzędzia statystyczne, z których agent korzysta.
 
 ## Architektura
@@ -29,9 +29,9 @@ statystyczną i nigdy nie jest tak opisywana.
 | `app:lotto-stride` | `src/Command/LottoStrideCommand.php` | Generator stroboskopowy: pobiera kotwice co N losowań wstecz (np. N=257) + sąsiadów i generuje zakłady. Świadomy gry (`--game`), przed zbudowaniem puli domyka archiwum z LOTTO OpenAPI (`--no-refresh` wyłącza). |
 | `app:lotto-archive` | `src/Command/LottoArchiveCommand.php` | Buduje i pokazuje archiwum losowań. `--status` pokazuje stan bez sieci, `--game=X --days=N` domyka jedną grę, `--all-games` zasila wiele gier jednym zapytaniem na dzień, `--repair` pobiera ponownie daty zapisane niekompletnie. |
 | `app:lotto-backtest` | `src/Command/LottoBacktestCommand.php` | Backtest kroczeń (stride sampling N) i sąsiadów na pełnym archiwum wybranej gry (`--game`). Rozkład hipergeometryczny liczony z zakresu liczb i liczby losowanych kul TEJ gry. |
-| `app:lotto-generator` | `src/Command/LottoGeneratorCommand.php` | Zamienia pulę (ręczną lub z AI) na kupony w jednym z 9 trybów. |
+| `app:lotto-generator` | `src/Command/LottoGeneratorCommand.php` | Zamienia pulę (ręczną lub z AI) na kupony w jednym z 9 trybów (wspiera `--sessions` oraz `--months`). |
 | `app:lotto-stats` | `src/Command/LottoStatsCommand.php` | Okno statystyczne: rozwodnienie, macierz par, rozkład sum, ranking kuponów, opcjonalny komentarz AI (`--ai`). |
-| `app:lotto-tui` | `src/Command/LottoTuiCommand.php` | Interaktywny odpowiednik generatora (obsługuje AI, Stride i Manual). |
+| `app:lotto-tui` | `src/Command/LottoTuiCommand.php` | Interaktywny odpowiednik generatora (obsługuje AI, Stride i Manual, respektuje `--sessions` oraz `--months`). |
 | `app:ai-models` | `src/Command/AiModelsCommand.php` | Katalog modeli AI dla wszystkich dostawców (Gemini, Claude, OpenAI, DeepSeek) z zaleceniami statystycznymi i trybem `--live`. |
 | `app:gemini-models` | `src/Command/GeminiModelsCommand.php` | (Legacy) Wypisuje modele dostępne dla klucza Google Gemini API. |
 
@@ -40,7 +40,7 @@ statystyczną i nigdy nie jest tak opisywana.
 | Warstwa | Plik | Rola |
 |---|---|---|
 | Oficjalne API | `src/Service/LottoApiClient.php` | LOTTO OpenAPI (`developers.lotto.pl`). Wyniki wyłącznie **dla pojedynczej daty**: `by-date-per-game` (jedna gra) albo `by-date` (wszystkie gry naraz). Endpointu z zakresem dat nie ma — sprawdzone w specyfikacji `swagger/open-api-v1/swagger.json`. |
-| Cache API | `src/Service/DrawHistoryProvider.php` | Przyrostowy magazyn kluczowany datą (`var/draw-history/<Gra>.json`). Pobiera **sekwencyjnie**, a HTTP 429 ponawia po wycofaniu. W trybie interaktywnym budżet to 25 nowych dat; backfill podaje własny. |
+| Cache API | `src/Service/DrawHistoryProvider.php` | Przyrostowy magazyn kluczowany datą (`var/draw-history/<Gra>.json`). Pobiera **sekwencyjnie**, a HTTP 429 ponawia po wycofaniu. Zwraca dokładnie `$limit` najnowszych losowań (`krsort`), pomijając puste wpisy z bieżącego dnia przed wieczornym losowaniem. |
 | Archiwum chronologiczne | `src/Service/DrawArchiveService.php` | Rzutuje cache API na listę uporządkowaną w czasie, scala ją z archiwum na dysku (`data/lotto_draws.json` dla Lotto, `data/draws/<Gra>.json` dla reszty) i dopisuje nowe losowania. Zgłasza też, o ile losowań archiwum jest do tyłu. |
 
 Kroczenie adresuje losowania **pozycją** (T-N, T-2N...), więc brakujące losowanie przesuwa
@@ -64,21 +64,25 @@ pobranego pliku tekstowego. Skrypt **scala**, a nie nadpisuje: nie kasuje losowa
 > Nie istnieje `LottoCommand` — wcześniejsza wersja tego pliku opisywała klasę,
 > której nigdy nie było w repozytorium.
 
-## Narzędzia agenta (`src/Service/AgentTools/`)
+## Narzędzia i akcje agenta (`src/Service/AgentTools/`)
 
-| Narzędzie | Źródło danych | Uwagi |
+| Narzędzie | Źródło danych | Opis i obsługa okna czasowego (`--sessions` / `--months`) |
 |---|---|---|
-| `fetch_hot_cold_stats` | `numbers-frequency` | Częstotliwości pojedynczych liczb. |
-| `fetch_neighbours_analysis` | `numbers-frequency` | ⚠️ „Kotwice" to liczby **najczęstsze w oknie**, a nie liczby z ostatniego losowania. |
-| `fetch_overdue_stats` | `numbers-frequency` | ⚠️ Zwraca **średni odstęp** (`totalDraws / occurrences`), a nie czas od ostatniego wystąpienia. Ranking jest równoważny liście liczb zimnych. |
-| `fetch_pair_co_occurrence` | `numbers-frequency` | ⚠️ Heurystyka `sqrt(f(A)*f(B))` — **nie** zawiera informacji o parach. Prawdziwe współwystępowanie liczy `StatisticalOptimizerService::buildPairAffinityMatrix()` na podstawie `fetchDrawHistory()`. |
-| `fetch_recent_draws` | `numbers-frequency` | ⚠️ Zwraca podsumowanie częstotliwości, nie listę losowań. |
-| `evaluate_candidate_pool` | lokalnie | Parzystość, suma, rozkład niska/wysoka. |
-| `evaluate_distribution` | lokalnie | Rozkład dekadowy i pozycja sumy na krzywej. |
-| `test_system_coverage` | lokalnie | ⚠️ Gwarancje są **warunkowe**: zakładają, że wszystkie wylosowane liczby leżą w podanej puli. |
+| `fetch_hot_cold_stats` | `numbers-frequency` | Częstotliwości pojedynczych liczb dla wybranego okna czasowego (`sessions` lub `months`). |
+| `fetch_neighbours_analysis` | `DrawHistoryProvider` + `numbers-frequency` | Analiza klastrowa syndykatu: kotwice z rzeczywistego ostatniego losowania (`latestDraw`), sąsiedzi $\pm 1$ (60%), powtórki (20%) i izolowane liczby zimne (20%). Respektuje dokładne `sessions` (np. `sessions=5`) oraz `months`. |
+| `fetch_overdue_stats` | `DrawHistoryProvider` (fallback: `numbers-frequency`) | Rzeczywiste opóźnienia liczb (`draws_since_last_seen` liczone od najnowszego losowania w oknie `sessions` / `months`). Przy braku historii zwraca estymację z flagą `is_estimate: true`. |
+| `fetch_pair_co_occurrence` | `DrawHistoryProvider` (fallback: `numbers-frequency`) | Rzeczywiste współwystępowanie par i trójek z wykładniczą wagą świeżości EMA (`MIN_DRAWS = 5`, obsługuje `sessions` i `months`). Poniżej 5 losowań zwraca heurystykę oznaczoną `is_estimate: true`. |
+| `fetch_recent_draws` | `DrawHistoryProvider` | Rzeczywiste wyniki ostatnich losowań (`draws_ago`, `numbers`, `special_numbers`) posortowane od najnowszego; obsługuje `count` oraz alias `sessions` (do 100 sesji). |
+| `evaluate_candidate_pool` | lokalnie | Parzystość, suma, rozkład niska/wysoka i pary sąsiadujące w proponowanej puli. |
+| `evaluate_distribution` | lokalnie | Rozkład dekadowy oraz przesunięcie średniej sumy na krzywej Gaussa (`shift_in_sigmas`). |
+| `test_system_coverage` | lokalnie | Warunkowa symulacja pokrycia w systemie skróconym (zakłada trafienie wylosowanych liczb wewnątrz badanej puli). |
 
-Pozycje oznaczone ⚠️ to znane rozbieżności między opisem narzędzia a tym, co faktycznie
-liczy — szczegóły i status naprawy w [docs/REVIEW.md](docs/REVIEW.md), grupa A.
+### Automatyczne wstrzykiwanie parametrów CLI i reguły bezpieczeństwa w `ReActAgentService`
+- **Auto-iniekcja kontekstu CLI do akcji AI**: Jeżeli model LLM wywoła narzędzie historyczne (`fetch_neighbours_analysis`, `fetch_hot_cold_stats`, `fetch_overdue_stats`, `fetch_pair_co_occurrence`, `fetch_recent_draws`) i pominie parametry `game`, `sessions` lub `months`, `ReActAgentService::runAgentLoop()` automatycznie wstrzykuje wartości przekazane przez użytkownika w CLI.
+- **Przycinanie historii (`DrawHistoryProvider` / `HistoricalDataProvider`)**: Parametr `--sessions=N` (lub `--months=M` przeliczony przez `GameRegistryService::estimateSessionsForMonths()`) jest przekazywany bezpośrednio bez sztywnego nadpisywania minimum 50 sesji. Próg aktywacji rzeczywistej macierzy współwystępowania par i trójek EMA wynosi `MIN_DRAWS_FOR_CO_OCCURRENCE = 5`.
+- **Ochrona przed przeuczeniem (Anty-Overclustering)**: System prompt zakazuje kopiowania w komplecie całego ostatniego losowania (co eliminuje pętlę samospełniającej się przepowiedni wag EMA dla małych okien, np. `--sessions=5`).
+- **Samokorekta w Fazie 3**: Pętla ReAct wymusza powrót do Fazy 2, jeśli rozmiar puli odbiega od `$poolSize`, `shift_in_sigmas` przekracza przedział `[-1.0, +1.0]` lub naruszono limity dekadowe.
+- **Wspólne prompty (`LlmCommonPromptsTrait`)**: Wszystkie adaptery (`GeminiApiClient`, `AnthropicApiClient`, `OpenAiApiClient`) współdzielą ujednolicone metody `askForPool()` (obsługa strategii `balanced`, `aggressive`, `syndicate`, `decades` oraz twarda walidacja zakresu `1..$maxNumber`) i `askForRecommendation()`.
 
 ## Konfiguracja środowiska
 
@@ -129,9 +133,9 @@ Warstwa integracji z modelami LLM (`src/Service/Llm/`) została zaprojektowana w
 ### Kluczowe komponenty:
 1. **`LlmClientInterface`**:
    - `chatWithTools(array $messages, array $tools, ?string $model = null): array`: Uniwersalny silnik rozmowy wieloturowej z obsługą Function Calling (używany przez agenta ReAct).
-   - `askForPool(string $prompt, ?string $model = null): ?array`: Generowanie puli kandydującej w formacie JSON `{"reasoning": "...", "selected_pool": [...]}`.
-   - `askForRecommendation(string $prompt, ?string $model = null): ?string`: Generowanie narracyjnego komentarza i analizy strategicznej dla Okna Statystycznego (`app:lotto-stats --ai`).
-   - `getProviderName()` oraz `getDefaultModel()`: Metadane dostawcy.
+   - `askForPool(string $gameType, string $hotStr, string $coldStr, int $poolSize, string $strategy = 'balanced', int $maxNumber = 0): array`: Generowanie puli kandydującej z walidacją zakresu bębna `1..$maxNumber`.
+   - `askForRecommendation(string $gameType, int $pickCount, int $betsCount, string $hotStr, string $coldStr, bool $includeNeighbours, bool $isJson): string`: Generowanie rekomendacji zakładów (JSON lub tekst).
+   - `getProviderName()` oraz `getModel()`: Metadane dostawcy.
 2. **`SchemaHelper`**:
    - Narzędzia w repozytorium deklarują typy parametrów wielkimi literami (np. `OBJECT`, `ARRAY`, `STRING`).
    - `SchemaHelper::normalize()` automatycznie rekursywnie mapuje je na małe litery (`object`, `array`, `string`), zapewniając 100% zgodności ze specyfikacją JSON Schema wymaganą przez Anthropic Claude oraz OpenAI / DeepSeek.

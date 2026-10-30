@@ -187,10 +187,21 @@ class DrawHistoryProvider
             $this->save($gameType, $store);
         }
 
+        // Zwracamy najnowsze daty, w których faktycznie są znane losowania w magazynie,
+        // aż do osiągnięcia limitu sesji ($limit). Dzięki temu:
+        // 1) gdy wieczorne losowanie z dzisiaj jeszcze się nie odbyło, nie tracimy 1 sesji z okna (np. 4 zamiast 5),
+        // 2) dla gier wielolosowaniowych (MultiMulti, Keno) przycinamy wynik dokładnie do $limit sesji.
+        krsort($store);
         $draws = [];
-        foreach ($wanted as $date) {
-            foreach ($store[$date] ?? [] as $draw) {
+        foreach ($store as $date => $dateDraws) {
+            if (!is_array($dateDraws)) {
+                continue;
+            }
+            foreach ($dateDraws as $draw) {
                 $draws[] = $draw;
+                if (count($draws) >= $limit) {
+                    break 2;
+                }
             }
         }
 

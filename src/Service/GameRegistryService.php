@@ -189,6 +189,19 @@ class GameRegistryService
         return isset(self::GAMES_CONFIG[$gameType]);
     }
 
+    /**
+     * Szacuje liczbę sesji losowań przypadającą na podaną liczbę miesięcy dla danej gry.
+     */
+    public function estimateSessionsForMonths(string $gameType, int $months): int
+    {
+        $config = $this->getGameConfig($gameType);
+        $drawDays = $config['draw_days'] ?? [1, 2, 3, 4, 5, 6, 7];
+        $drawsPerWeek = max(1, count($drawDays));
+        $weeks = max(1.0, $months * 4.345);
+
+        return min(self::MAX_SESSIONS_LOOKBACK, max(1, (int) round($weeks * $drawsPerWeek)));
+    }
+
     public function calculateDateFromForSessions(string $gameType, ?int $sessions = null, int $fallbackMonths = 6): string
     {
         if ($sessions === null || $sessions <= 0) {

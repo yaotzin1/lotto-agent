@@ -51,6 +51,7 @@ class LottoGeneratorCommand extends Command
     {
         $this->addOption('game', 'g', InputOption::VALUE_REQUIRED, 'Typ gry do analizy');
         $this->addOption('sessions', 's', InputOption::VALUE_REQUIRED, 'Ilość ostatnich losowań do pobrania statystyk');
+        $this->addOption('months', 'mo', InputOption::VALUE_REQUIRED, 'Z ilu ostatnich miesięcy pobrać statystyki');
         $this->addOption('bets', 'b', InputOption::VALUE_REQUIRED, 'Ile zakładów ma wygenerować system?');
         $this->addOption('strategy', 'st', InputOption::VALUE_REQUIRED, 'Strategia doboru liczb przez AI (balanced/aggressive)');
         $this->addOption('pool-size', 'p', InputOption::VALUE_REQUIRED, 'Rozmiar puli liczb wybieranych przez AI');
@@ -200,8 +201,10 @@ class LottoGeneratorCommand extends Command
             }
 
             $sessionsOpt = $input->getOption('sessions');
+            $monthsOpt = $input->getOption('months');
             $sessions = $sessionsOpt !== null && is_numeric($sessionsOpt) ? (int)$sessionsOpt : null;
-            if (!$sessions) {
+            $months = $monthsOpt !== null && is_numeric($monthsOpt) ? (int)$monthsOpt : null;
+            if (!$sessions && !$months) {
                 $sessions = (int)$io->ask('Z ilu ostatnich losowań pobrać statystyki (np. 50)?', '50');
             }
 
@@ -231,7 +234,7 @@ class LottoGeneratorCommand extends Command
 
             $providerOpt = $input->getOption('provider');
             $modelOpt = $input->getOption('model');
-            $result = $this->reactAgentService->runAgentLoop($gameType, $poolSize, $aiStrategy, $onStepCallback, $sessions, null, $withNeighbours, $coverDecades, $providerOpt, $modelOpt);
+            $result = $this->reactAgentService->runAgentLoop($gameType, $poolSize, $aiStrategy, $onStepCallback, $sessions, $months, $withNeighbours, $coverDecades, $providerOpt, $modelOpt);
             $fullPool = $result['pool'] ?? $result['selected_pool'] ?? [];
             sort($fullPool);
 
@@ -267,8 +270,14 @@ class LottoGeneratorCommand extends Command
             }
             $poolSize = max($game['pick'], min($maxNum, $poolSize));
 
-            $sessions = (int) ($input->getOption('sessions') ?: 50);
-            $history = $this->historicalDataProvider->fetch($gameType, $sessions);
+            $sessionsOpt = $input->getOption('sessions');
+            $monthsOpt = $input->getOption('months');
+            $sessions = ($sessionsOpt !== null && is_numeric($sessionsOpt)) ? (int) $sessionsOpt : null;
+            $months = ($monthsOpt !== null && is_numeric($monthsOpt)) ? (int) $monthsOpt : null;
+            if ($sessions === null && $months === null) {
+                $sessions = 50;
+            }
+            $history = $this->historicalDataProvider->fetch($gameType, $sessions, $months);
             $frequencies = $history['frequencies'] ?? [];
             $latestDraw = $history['draws'][0] ?? [];
 
@@ -366,8 +375,14 @@ class LottoGeneratorCommand extends Command
         }
 
         // Dane historyczne pobierane raz, niezaleznie od trybu.
-        $sessions = (int) ($input->getOption('sessions') ?: 50);
-        $history = $this->historicalDataProvider->fetch($gameType, $sessions);
+        $sessionsOpt = $input->getOption('sessions');
+        $monthsOpt = $input->getOption('months');
+        $sessions = ($sessionsOpt !== null && is_numeric($sessionsOpt)) ? (int) $sessionsOpt : null;
+        $months = ($monthsOpt !== null && is_numeric($monthsOpt)) ? (int) $monthsOpt : null;
+        if ($sessions === null && $months === null) {
+            $sessions = 50;
+        }
+        $history = $this->historicalDataProvider->fetch($gameType, $sessions, $months);
 
         if (!$history['ok']) {
             $io->warning($history['warning']);

@@ -40,6 +40,10 @@ class FetchRecentDrawsTool implements LottoToolInterface
                     'type' => 'INTEGER',
                     'description' => 'Liczba losowań do pobrania (domyślnie 10)',
                 ],
+                'sessions' => [
+                    'type' => 'INTEGER',
+                    'description' => 'Alias dla count — liczba ostatnich losowań do pobrania',
+                ],
             ],
             'required' => ['game'],
         ];
@@ -52,7 +56,8 @@ class FetchRecentDrawsTool implements LottoToolInterface
             return json_encode(['error' => "Nieprawidlowa nazwa gry: $game"]);
         }
 
-        $count = isset($args['count']) ? max(1, min((int) $args['count'], 50)) : 10;
+        $rawCount = $args['count'] ?? $args['sessions'] ?? 10;
+        $count = max(1, min((int) $rawCount, 100));
 
         // Prawdziwe wyniki losowan, od najnowszego do najstarszego.
         $draws = $this->drawHistoryProvider->getHistory($game, $count)['draws'];
