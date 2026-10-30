@@ -43,7 +43,7 @@ class LottoStatsCommand extends Command
         $this->addOption('bets', 'b', InputOption::VALUE_REQUIRED, 'Liczba zakładów do wygenerowania (np. 100 lub 25)');
         $this->addOption('pick', null, InputOption::VALUE_REQUIRED, 'Ile liczb skreślać na kuponie (tylko MultiMulti i Keno)');
         $this->addOption('max-rows', null, InputOption::VALUE_REQUIRED, 'Ogranicz liczbę wierszy w tabeli wyników (domyślnie: wszystkie)');
-        $this->addOption('sessions', 's', InputOption::VALUE_REQUIRED, 'Liczba ostatnich losowań do pobrania statystyk', '50');
+        $this->addOption('sessions', 's', InputOption::VALUE_REQUIRED, 'Liczba ostatnich losowań do pobrania statystyk');
         $this->addOption('months', 'mo', InputOption::VALUE_REQUIRED, 'Liczba miesięcy do pobrania statystyk');
         $this->addOption('full-coverage', null, InputOption::VALUE_OPTIONAL, 'Wymuś 100% pokrycie puli wejściowej (true/false)', 'true');
         $this->addOption('ai', null, InputOption::VALUE_NONE, 'Dołącz strategiczną analizę i komentarz AI (Google Gemini, Claude, OpenAI, DeepSeek)');
@@ -91,9 +91,13 @@ class LottoStatsCommand extends Command
             }
         }
 
-        $sessions = (int)($input->getOption('sessions') ?: 50);
+        $sessionsOpt = $input->getOption('sessions');
         $monthsOpt = $input->getOption('months');
-        $months = $monthsOpt !== null ? (int)$monthsOpt : null;
+        $sessions = ($sessionsOpt !== null && is_numeric($sessionsOpt)) ? (int)$sessionsOpt : null;
+        $months = ($monthsOpt !== null && is_numeric($monthsOpt)) ? (int)$monthsOpt : null;
+        if ($sessions === null && $months === null) {
+            $sessions = 50;
+        }
 
         $dateFrom = $this->gameRegistryService->calculateDateFromForSessions($gameType, $sessions, $months ?: 6);
 
@@ -109,7 +113,7 @@ class LottoStatsCommand extends Command
         ];
         $frequencies = $history['frequencies'];
         $draws = $history['draws'];
-        $totalDrawsAnalyzed = $history['draws_analyzed'] ?: $sessions;
+        $totalDrawsAnalyzed = $history['draws_analyzed'] ?: ($sessions ?? count($draws));
 
         if (!$history['ok'] && !$isJson) {
             $io->warning($history['warning']);
@@ -225,13 +229,28 @@ class LottoStatsCommand extends Command
                 $hotStr = implode(', ', array_map(fn($num, $cnt) => "$num ({$cnt}x)", array_keys($hotTop), $hotTop));
                 $coldStr = implode(', ', array_map(fn($num, $cnt) => "$num ({$cnt}x)", array_keys($coldTop), $coldTop));
 
+                $topPairsBrief = implode(', ', array_map(
+                    static fn(array $p): string => sprintf('[%d,%d] (aff:%d, %dx)', $p['pair'][0], $p['pair'][1], $p['affinity'], $p['bets_included']),
+                    array_slice($report['top_pairs'] ?? [], 0, 4)
+                ));
+                $gaussInfo = $report['gaussian_analysis'] ?? [];
+                $parityBrief = implode(', ', array_map(
+                    static fn(string $k, int $v): string => "$k: $v",
+                    array_keys($report['parity_summary'] ?? []),
+                    array_values($report['parity_summary'] ?? [])
+                ));
+
                 $aiPrompt = sprintf(
-                    "Jesteś Głównym Analitykiem Gier Liczbowych. Przygotuj zwięzłą (3-4 zdania) analizę statystyczną i rekomendację dla gry %s (%d z %d).\n" .
+                    "Jesteś Głównym Analitykiem Gier Liczbowych. Przygotuj zwięzłą (3-4 zdania) analizę statystyczną i rekomendację dla wygenerowanego pakietu gry %s (%d z %d).\n" .
                     "DANE Z LOTTO OPENAPI (ostatnie %d losowań):\n" .
                     "- Liczby najczęstsze (Hot): %s\n" .
                     "- Liczby najrzadsze (Cold): %s\n" .
-                    "- Zastosowano optymalizację rozwodnienia: %d liczb rozłożono na %d zakładów.\n" .
-                    "Przedstaw ocenę ryzyka, zalecenie dotyczące balansu parzystości i sumy Gaussa oraz podsumowanie synergii par.",
+                    "PARAMETRY WYGENEROWANEGO PAKIETU:\n" .
+                    "- Rozwodnienie: pula %d liczb rozłożona na %d zakładów (pokrycie puli: %.1f%%, pokrycie unikalnych par: %.1f%%).\n" .
+                    "- Rozkład sum Gaussa: średnia pakietu %.1f wobec oczekiwanej %d (przedział optymalny: %s).\n" .
+                    "- Struktura parzystości (N:P): %s.\n" .
+                    "- Najsilniejsze pary w pakiecie: %s.\n" .
+                    "Przedstaw konkretną ocenę gęstości siatki (ryzyko rozwodnienia), komentarz do odchylenia sumy Gaussa i balansu parzystości oraz ocenę synergii par bez ogólników.",
                     $gameType,
                     $pick,
                     $maxNumber,
@@ -239,7 +258,14 @@ class LottoStatsCommand extends Command
                     $hotStr,
                     $coldStr,
                     count($fullPool),
-                    $betsCount
+                    $betsCount,
+                    $report['pool_coverage_pct'] ?? 100.0,
+                    $report['pairs_coverage_pct'] ?? 0.0,
+                    $gaussInfo['avg_sum'] ?? 0.0,
+                    $gaussInfo['expected_sum'] ?? 0,
+                    $gaussInfo['optimal_range'] ?? '',
+                    $parityBrief ?: 'brak danych',
+                    $topPairsBrief ?: 'brak danych'
                 );
 
                 $aiAnalysis = $llmClient->generateText($aiPrompt, "Jesteś Głównym Analitykiem Gier Liczbowych.");

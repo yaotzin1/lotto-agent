@@ -232,11 +232,17 @@ class LottoTuiCommand extends Command
         $coverDecades = (bool) $input->getOption('cover-decades');
         $poolModeOpt = $input->getOption('pool-mode');
         $modeOpt = $input->getOption('mode');
-        $sessions = (int) ($input->getOption('sessions') ?: 50);
+        $sessionsOpt = $input->getOption('sessions');
+        $monthsOpt = $input->getOption('months');
+        $sessions = ($sessionsOpt !== null && is_numeric($sessionsOpt)) ? (int) $sessionsOpt : null;
+        $months = ($monthsOpt !== null && is_numeric($monthsOpt)) ? (int) $monthsOpt : null;
+        if ($sessions === null && $months === null) {
+            $sessions = 50;
+        }
 
         // Pobieramy historię losowań na samym starcie, aby wyświetlić pasek statusu
         // oraz uniknąć dwukrotnego odpytywania API/dysku w dalszych krokach.
-        $history = $this->historicalDataProvider->fetch($gameType, $sessions);
+        $history = $this->historicalDataProvider->fetch($gameType, $sessions, $months);
         $latestDraw = $this->parseNumbers($input->getOption('latest-draw'));
         if ($latestDraw === [] && !empty($history['draws'])) {
             $latestDraw = $history['draws'][0] ?? [];
@@ -257,7 +263,7 @@ class LottoTuiCommand extends Command
             [
                 ['Wybrana gra', sprintf('<fg=yellow;options=bold>%s</> (%d z %d%s)', $gameType, (int) $game['pick'], $maxNum, $extraLabel)],
                 ['Ostatnie losowanie (Kotwice)', sprintf('<fg=cyan;options=bold>[%s]</>', $latestDrawStr)],
-                ['Załadowana historia losowań', sprintf('%d sesji %s', $drawsLoadedCount, $drawsLoadedCount >= 20 ? '<fg=green>[OK - Aktywna Synergia EMA Par i Trójek]</>' : '<fg=yellow>[Mało danych - Tryb Heurystyczny]</>')],
+                ['Załadowana historia losowań', sprintf('%d sesji %s', $drawsLoadedCount, $drawsLoadedCount >= StatisticalOptimizerService::MIN_DRAWS_FOR_CO_OCCURRENCE ? '<fg=green>[OK - Aktywna Synergia EMA Par i Trójek]</>' : '<fg=yellow>[Mało danych - Tryb Heurystyczny]</>')],
             ]
         );
 

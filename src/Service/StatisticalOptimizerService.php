@@ -9,7 +9,7 @@ use Psr\Log\LoggerInterface;
 class StatisticalOptimizerService
 {
     /** Poniżej tylu losowań statystyka par jest zbyt rzadka, by cokolwiek znaczyć. */
-    public const MIN_DRAWS_FOR_CO_OCCURRENCE = 20;
+    public const MIN_DRAWS_FOR_CO_OCCURRENCE = 5;
 
     public function __construct(
         private readonly GameRegistryService $gameRegistryService,
@@ -881,7 +881,7 @@ class StatisticalOptimizerService
                                 $curConsecutive = 1;
                             }
                         }
-                        if ($maxConsecutive >= 3 || $adjacentPairs > 1) {
+                        if ($maxConsecutive >= 3 || $adjacentPairs > $maxAdjacentPairs) {
                             continue;
                         }
 

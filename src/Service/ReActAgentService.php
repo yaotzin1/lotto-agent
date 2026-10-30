@@ -96,37 +96,40 @@ class ReActAgentService
             : '';
 
         $timeWindowInstruction = $sessions
-            ? "OKNO CZASOWE: Ostatnie $sessions losowań."
-            : ($months ? "OKNO CZASOWE: Ostatnie $months miesięcy." : "OKNO CZASOWE: Ostatnie 50 losowań (domyślnie).");
+            ? "OKNO CZASOWE: Ostatnie $sessions losowań. Wywołując narzędzia statystyczne ('fetch_neighbours_analysis', 'fetch_hot_cold_stats', 'fetch_overdue_stats', 'fetch_pair_co_occurrence', 'fetch_recent_draws'), przekazuj parametr sessions=$sessions."
+            : ($months
+                ? "OKNO CZASOWE: Ostatnie $months miesięcy. Wywołując narzędzia statystyczne, przekazuj parametr months=$months."
+                : "OKNO CZASOWE: Ostatnie 50 losowań (domyślnie).");
 
         $systemPrompt = "Jesteś Głównym Analitykiem Statystycznym i Kombinatorycznym w elitarnym syndykacie loteryjnym.
-Twój cel: Przeprowadzić rygorystyczną, wieloetapową analizę matematyczną i wyselekcjonować kandydacką pulę DOKŁADNIE $poolSize unikalnych liczb dla gry $game (losujemy $pickCount z $maxNumber liczb).
+Twój cel: Przeprowadzić rygorystyczną, wieloetapową analizę matematyczną i wyselekcjonować kandydacką pulę DOKŁADNIE $poolSize unikalnych liczb dla gry $game (losujemy $pickCount z $maxNumber liczb, dozwolony zakres: 1..$maxNumber).
 
 ZASADY ANALIZY:
 $strategyGuidance
 $decadeInstruction
 $neighbourInstruction
 $timeWindowInstruction
+- OCHRONA PRZED PRZEUCZENIEM (ANTY-OVERCLUSTERING): Nie kopiuj w komplecie całego ostatniego losowania (statystycznie powtarzają się zwykle 0-2 liczby z poprzedniej sesji). Dywersyfikuj kotwice i sąsiadów tak, aby nie kanibalizować par w jednym ciasnym klastrze.
 
 MASZ DO DYSPOZYCJI NASTĘPUJĄCE NARZĘDZIA STATYSTYCZNE:
 1. 'fetch_neighbours_analysis': Zaawansowana analiza klastrowa sąsiadów (+1/-1), powtórek wygranych i liczb izolowanych.
 2. 'fetch_hot_cold_stats': Pobierz statystyki częstotliwości liczb gorących i zimnych.
 3. 'fetch_overdue_stats': Oblicz opóźnienia i uśpienia liczb (reversion-to-the-mean).
-4. 'fetch_pair_co_occurrence': Pobierz najczęstsze pary liczb występujące razem.
+4. 'fetch_pair_co_occurrence': Pobierz najczęstsze pary i trójki liczb występujące razem (z wagą EMA).
 5. 'fetch_recent_draws': Pobierz ostatnie wyniki losowań.
-6. 'evaluate_candidate_pool': Przeanalizuj parzystość, sumę i pary w proponowanej puli.
-7. 'evaluate_distribution': Przeanalizuj rozkład dekadowy i pozycję sumy na krzywej Gaussa.
-8. 'test_system_coverage': Przeprowadź symulację pokrycia w systemie skróconym.
+6. 'evaluate_candidate_pool': Przeanalizuj parzystość, sumę i pary sąsiadujące w proponowanej puli (parametr: 'numbers').
+7. 'evaluate_distribution': Przeanalizuj rozkład dekadowy i rozrzut sum podzbiorów na krzywej Gaussa (parametr: 'pool').
+8. 'test_system_coverage': Przeprowadź warunkową symulację pokrycia w systemie skróconym (parametry: 'pool', 'bets_count').
 
 PROCEDURA REACT (4 FAZY REAZONOWANIA I PĘTLA SAMOKOREKTY):
-Faza 1 [Eksploracja]: Użyj narzędzi statystycznych ('fetch_neighbours_analysis', 'fetch_hot_cold_stats', 'fetch_overdue_stats' lub 'fetch_pair_co_occurrence'), aby zebrać dane historyczne.
-Faza 2 [Hipoteza]: Sformułuj hipotezę doboru $poolSize liczb zgodną ze strategią ($strategy).
+Faza 1 [Eksploracja]: Użyj narzędzi statystycznych ('fetch_neighbours_analysis', 'fetch_hot_cold_stats', 'fetch_overdue_stats' lub 'fetch_pair_co_occurrence'), aby zebrać dane historyczne dla zadanego okna czasowego.
+Faza 2 [Hipoteza]: Sformułuj hipotezę doboru DOKŁADNIE $poolSize unikalnych liczb z zakresu 1..$maxNumber zgodną ze strategią ($strategy).
 Faza 3 [Weryfikacja i Samokorekta]: Przetestuj proponowaną pulę narzędziami 'evaluate_candidate_pool' oraz 'evaluate_distribution' (opcjonalnie 'test_system_coverage').
    ⚠️ KRYTYCZNA REGUŁA SAMOKOREKTY: Jeśli weryfikacja wykaże:
-   - znaczne przesunięcie średniej sumy od środka rozkładu Gaussa (np. przeładowanie liczbami 40+ lub samymi niskimi),
-   - zaburzony rozkład parzystości lub pominięcie/przeładowanie którejkolwiek dekady,
-   - wąskie gardło kombinatoryczne lub złą spójność par,
-   BEZWZGLĘDNIE NIE zatwierdzaj tej puli ani nie przechodź do Fazy 4! Wróć do Fazy 2, odrzuć liczby generujące zaburzenie, wprowadź zrównoważone zamienniki (np. niskie kotwice, powtórki) i zweryfikuj poprawioną pulę ponownie w kolejnej turze.
+   - niewłaściwy rozmiar puli (inny niż $poolSize liczb),
+   - znaczne przesunięcie średniej sumy od środka rozkładu Gaussa (shift_in_sigmas poza przedziałem [-1.0, +1.0], chyba że strategia to 'aggressive'),
+   - zaburzony rozkład parzystości lub pominięcie/przeładowanie którejkolwiek dekady (gdy wymagane pokrycie dekadowe),
+   BEZWZGLĘDNIE NIE zatwierdzaj tej puli ani nie przechodź do Fazy 4! Wróć do Fazy 2, odrzuć liczby generujące zaburzenie, wprowadź zrównoważone zamienniki i zweryfikuj poprawioną pulę ponownie w kolejnej turze.
 Faza 4 [Synteza]: Dopiero gdy pula pomyślnie przejdzie weryfikację i jest zbalansowana (lub zbliżasz się do limitu tur), zwróć końcowy wynik WYŁĄCZNIE w formacie JSON:
 {
   \"reasoning\": \"Zwięzłe uzasadnienie strategii, przebiegu ewentualnej samokorekty i wybranych liczb (max 3 zdania).\",
@@ -183,6 +186,29 @@ Faza 4 [Synteza]: Dopiero gdy pula pomyślnie przejdzie weryfikację i jest zbal
                 foreach ($toolCalls as $call) {
                     $toolName = (string) ($call['name'] ?? '');
                     $toolArgs = (array) ($call['args'] ?? []);
+
+                    // Automatyczne wstrzyknięcie okna czasowego (sessions / months) oraz gry z CLI,
+                    // jeśli model AI pominął te parametry w wywołaniu narzędzia.
+                    if (!isset($toolArgs['game']) || $toolArgs['game'] === '') {
+                        $toolArgs['game'] = $game;
+                    }
+                    $historyTools = [
+                        'fetch_neighbours_analysis',
+                        'fetch_hot_cold_stats',
+                        'fetch_overdue_stats',
+                        'fetch_pair_co_occurrence',
+                        'fetch_recent_draws',
+                    ];
+                    if (in_array($toolName, $historyTools, true)) {
+                        if ($sessions !== null && !isset($toolArgs['sessions'])) {
+                            $toolArgs['sessions'] = $sessions;
+                            if ($toolName === 'fetch_recent_draws' && !isset($toolArgs['count'])) {
+                                $toolArgs['count'] = $sessions;
+                            }
+                        } elseif ($months !== null && !isset($toolArgs['months']) && !isset($toolArgs['sessions'])) {
+                            $toolArgs['months'] = $months;
+                        }
+                    }
 
                     // Capture candidate pool if passed to tool
                     if (isset($toolArgs['numbers']) && is_array($toolArgs['numbers'])) {

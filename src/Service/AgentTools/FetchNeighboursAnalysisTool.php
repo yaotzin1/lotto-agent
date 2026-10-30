@@ -60,12 +60,18 @@ class FetchNeighboursAnalysisTool implements LottoToolInterface
         $maxNum = $config['from'] ?? 49;
         $pickCount = $config['pick'] ?? 6;
 
-        $sessions = isset($args['sessions']) ? max(5, min((int) $args['sessions'], 100)) : 15;
-        $months = isset($args['months']) ? (int) $args['months'] : 6;
+        $sessions = isset($args['sessions']) && is_numeric($args['sessions'])
+            ? max(1, min((int) $args['sessions'], 200))
+            : null;
+        $months = isset($args['months']) && is_numeric($args['months']) ? (int) $args['months'] : 6;
 
-        $dateFrom = $this->gameRegistryService->calculateDateFromForSessions($game, $sessions, $months);
+        $historyLimit = $sessions ?? (isset($args['months']) && is_numeric($args['months'])
+            ? $this->gameRegistryService->estimateSessionsForMonths($game, $months)
+            : 15);
+
+        $dateFrom = $this->gameRegistryService->calculateDateFromForSessions($game, $sessions ?? ($args['months'] ?? null ? null : 15), $months);
         $stats = $this->lottoApiClient->getHotColdNumbers($game, $dateFrom);
-        $history = $this->drawHistoryProvider?->getHistory($game, max($sessions, 20));
+        $history = $this->drawHistoryProvider?->getHistory($game, $historyLimit);
         $draws = isset($history['draws']) && is_array($history['draws'])
             ? array_values(array_filter(array_map(static fn(array $d): array => $d['main'] ?? [], $history['draws'])))
             : [];

@@ -42,6 +42,10 @@ class FetchOverdueStatsTool implements LottoToolInterface
                     'type' => 'INTEGER',
                     'description' => 'Liczba ostatnich losowań do przeanalizowania (domyślnie 50)',
                 ],
+                'months' => [
+                    'type' => 'INTEGER',
+                    'description' => 'Liczba ostatnich miesięcy do przeanalizowania (alternatywa dla sessions)',
+                ],
             ],
             'required' => ['game'],
         ];
@@ -54,7 +58,11 @@ class FetchOverdueStatsTool implements LottoToolInterface
             return json_encode(['error' => "Nieprawidłowa nazwa gry: $game"]);
         }
 
-        $sessions = isset($args['sessions']) ? max(10, min((int) $args['sessions'], 200)) : 50;
+        $sessions = isset($args['sessions']) && is_numeric($args['sessions'])
+            ? max(1, min((int) $args['sessions'], 500))
+            : (isset($args['months']) && is_numeric($args['months'])
+                ? $this->gameRegistryService->estimateSessionsForMonths($game, (int) $args['months'])
+                : 50);
         $config = $this->gameRegistryService->getGameConfig($game);
         $maxNum = $config['from'] ?? 49;
 
