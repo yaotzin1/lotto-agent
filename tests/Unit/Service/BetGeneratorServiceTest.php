@@ -118,4 +118,26 @@ class BetGeneratorServiceTest extends TestCase
         $coverage = $this->service->calculateCoverage($pool, $bets, 6);
         $this->assertGreaterThanOrEqual(98.0, $coverage['guarantees'][3]);
     }
+
+    public function testFractalSplitBlocksAndCouponsMaintainGaussianSumBalance(): void
+    {
+        $pool = range(1, 49);
+        $blocks = $this->service->generateOverlappingBlocks($pool, 2, 25);
+
+        $this->assertCount(2, $blocks);
+        // Obie połowy fraktalne pokrywają 100% bębna 49 liczb
+        $merged = array_unique(array_merge($blocks[0], $blocks[1]));
+        $this->assertCount(49, $merged);
+
+        foreach ($blocks as $idx => $block) {
+            $bets = $this->service->generateBalancedShorthand($block, 6, 10);
+            $this->assertCount(10, $bets);
+            foreach ($bets as $bet) {
+                $sum = array_sum($bet);
+                // Żaden kupon nie może być wycinkiem jednej skrajnej dekady (np. suma 30 albo 250)
+                $this->assertGreaterThanOrEqual(100, $sum, "Blok #$idx wygenerował nienaturalnie niską sumę: $sum");
+                $this->assertLessThanOrEqual(200, $sum, "Blok #$idx wygenerował nienaturalnie wysoką sumę: $sum");
+            }
+        }
+    }
 }
