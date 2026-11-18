@@ -189,7 +189,17 @@ jobs:
         shell: bash
         run: |
           mkdir -p desktop/src-tauri/binaries
-          curl -fsSL "${{ matrix.spc_url }}" -o /tmp/spc-php.tar.gz
+          # static-php.dev only keeps recent patch builds, so a pinned php-8.5.0 URL
+          # goes stale (404). Resolve the newest php-8.5.x build for this platform.
+          base="https://dl.static-php.dev/static-php-cli/common"
+          suffix="$(basename "${{ matrix.spc_url }}" | sed -E 's/^php-[0-9.]+-cli-//')"
+          name="$(curl -fsSL "$base/?format=json" | grep -oE "php-8\.5\.[0-9]+-cli-${suffix}" | sort -uV | tail -1)"
+          if [ -z "$name" ]; then
+            echo "::error::No php-8.5.x static build found for ${suffix} at $base"
+            exit 1
+          fi
+          echo "Using $name"
+          curl -fsSL "$base/$name" -o /tmp/spc-php.tar.gz
           tar -xzf /tmp/spc-php.tar.gz -C /tmp
           cp /tmp/php "desktop/src-tauri/binaries/${{ matrix.sidecar_name }}"
           chmod +x "desktop/src-tauri/binaries/${{ matrix.sidecar_name }}"
