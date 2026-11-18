@@ -42,7 +42,9 @@ jobs:
           tools: composer:v2
 
       - name: Prepare environment file
-        run: cp .env.dev.example .env.dev
+        run: |
+          cp .env.dev.example .env
+          cp .env.dev.example .env.dev
 
       - name: Get Composer cache directory
         id: composer-cache
