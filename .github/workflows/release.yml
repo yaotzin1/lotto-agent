@@ -166,7 +166,7 @@ jobs:
           coverage: none
 
       - name: Install production Composer dependencies
-        run: composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader
+        run: composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader --no-scripts
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
