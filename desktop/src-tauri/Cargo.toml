@@ -1,6 +1,6 @@
 [package]
 name = "lotto-agent-desktop"
-version = "1.0.3"
+version = "1.0.4"
 description = "Tauri v2 desktop wrapper for Lotto Agent (Symfony 8.2 / PHP 8.5 sidecar)"
 authors = ["yaotzin1"]
 edition = "2021"
