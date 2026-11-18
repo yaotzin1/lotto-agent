@@ -1,0 +1,14 @@
+name: spc-probe
+on:
+  push:
+    branches: [probe/spc]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          base=https://dl.static-php.dev/static-php-cli/common
+          for u in "$base/?format=json" "$base/" "$base/index.json" "https://dl.static-php.dev/static-php-cli/"; do
+            echo "== $u"; curl -sS -o /tmp/o -w "%{http_code} %{content_type}\n" "$u"; head -c 400 /tmp/o; echo
+            grep -oE "php-8\.[0-9]+\.[0-9]+-cli-[a-z0-9_.-]+" /tmp/o | sort -uV | grep -E "^php-8\.[45]" | tail -8
+          done
