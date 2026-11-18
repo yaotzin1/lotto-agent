@@ -279,3 +279,21 @@ jobs:
           releaseDraft: ${{ needs.prepare.outputs.draft == 'true' }}
           prerelease: false
           args: --target ${{ matrix.rust_target }}
+
+      - name: Build and upload portable Windows zip
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
+          APP_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          setup="$(ls desktop/src-tauri/target/${{ matrix.rust_target }}/release/bundle/nsis/*-setup.exe | head -1)"
+          out="Lotto-Agent_${APP_VERSION}_x64_portable"
+          # Unpack the NSIS installer so the portable layout (exe + php sidecar + resources) matches an installed app.
+          7z x -y "$setup" -o"$out" > /dev/null
+          rm -rf "$out/\$PLUGINSDIR" "$out/uninstall.exe"
+          ls -la "$out"
+          7z a -tzip "$out.zip" "./$out" > /dev/null
+          gh release upload "$TAG_NAME" "$out.zip" --clobber --repo "${{ github.repository }}"
