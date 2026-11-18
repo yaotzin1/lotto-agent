@@ -42,6 +42,7 @@ class LottoStatsCommand extends Command
         $this->addOption('pool', 'p', InputOption::VALUE_REQUIRED, 'Pula liczb (np. "1-42", "all", "1,5,10,15,20,25,30")');
         $this->addOption('bets', 'b', InputOption::VALUE_REQUIRED, 'Liczba zakładów do wygenerowania (np. 100 lub 25)');
         $this->addOption('pick', null, InputOption::VALUE_REQUIRED, 'Ile liczb skreślać na kuponie (tylko MultiMulti i Keno)');
+        $this->addOption('system', 'sys', InputOption::VALUE_REQUIRED, 'Rozmiar Systemu Pełnego (np. 7-12 liczb w rozkładzie Gaussa i Par EMA dla Lotto/MiniLotto/EuroJackpot)');
         $this->addOption('max-rows', null, InputOption::VALUE_REQUIRED, 'Ogranicz liczbę wierszy w tabeli wyników (domyślnie: wszystkie)');
         $this->addOption('sessions', 's', InputOption::VALUE_REQUIRED, 'Liczba ostatnich losowań do pobrania statystyk');
         $this->addOption('months', 'mo', InputOption::VALUE_REQUIRED, 'Liczba miesięcy do pobrania statystyk');
@@ -75,7 +76,10 @@ class LottoStatsCommand extends Command
         $maxNumber = $gameConfig['from'] ?? 49;
         $pick = $gameConfig['pick'] ?? 6;
 
-        if ($this->gameRegistryService->isVariablePick($gameType)) {
+        $systemOpt = $input->getOption('system');
+        if ($systemOpt !== null && is_numeric($systemOpt) && $this->gameRegistryService->supportsFullSystem($gameType)) {
+            $pick = $this->gameRegistryService->resolveSystemPick($gameType, (int) $systemOpt);
+        } elseif ($this->gameRegistryService->isVariablePick($gameType)) {
             $range = $this->gameRegistryService->getPickRange($gameType);
             $pickOpt = $input->getOption('pick');
 

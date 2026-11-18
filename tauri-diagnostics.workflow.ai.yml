@@ -1,0 +1,79 @@
+version: "1.0"
+name: "lotto-agent-tauri-diagnostics"
+
+# Multi-turn Indaba debate on Tauri v2 + PHP 8.5 sidecar / dev-backend diagnostics and edge cases.
+#
+# Validate:
+#   node D:\projects\private\Indaba\packages\cli\dist\bin.js validate tauri-diagnostics.workflow.ai.yml
+# Run:
+#   node D:\projects\private\Indaba\packages\cli\dist\bin.js run tauri-diagnostics.workflow.ai.yml
+
+defaults:
+  mcp_policy: optional
+
+roles:
+  tauri_auditor:
+    runner: ["claude-code", "acp"]
+    agent: "claude"
+  rust_architect:
+    runner: ["claude-code", "acp"]
+    agent: "claude"
+
+steps:
+  - id: "debate_tauri_issues"
+    role: "tauri_auditor"
+    consensus_with: ["rust_architect"]
+    decision_type: "consensus"
+    arbiter: "human"
+    isolation: "git_worktree"
+    permissions:
+      level: read
+    input_artifacts:
+      - "desktop/src-tauri/src/lib.rs"
+      - "desktop/src-tauri/tauri.conf.json"
+      - "desktop/src/api.ts"
+      - "src/Controller/DesktopTokenSubscriber.php"
+      - ".github/workflows/release.yml"
+    goal: >-
+      Audit how Tauri v2 discovers, launches, monitors, and diagnoses the PHP 8.5 sidecar and dev backend across
+      desktop/src-tauri/src/lib.rs, desktop/src-tauri/tauri.conf.json, desktop/src/api.ts,
+      src/Controller/DesktopTokenSubscriber.php, and .github/workflows/release.yml.
+      Focus on automatic issue detection in Tauri:
+      1) PHP version mismatch (< 8.5.0) or missing PHP binary on PATH / sidecar crash (capturing stderr and exit code).
+      2) Dev-mode external Docker backend detection (port 8000, cold boot latency, CORS/CSP, token mismatch).
+      3) Release bundle safety (externalBin injection, Windows DLLs/php.ini, read-only app bundle, app-data dirs).
+      4) Exposing structured sidecar diagnostics to the frontend so the UI explains why PHP is offline.
+      Debate protocol (MANDATORY at least 4 turns before AGREEMENT):
+      - Turn 1: Begin with CRITIQUE: and list up to 5 concrete issues with file/line references.
+      - Turn 2: Begin with CRITIQUE: and challenge or refine the proposed causes, Windows/macOS/Linux differences, and edge cases.
+      - Turn 3: Begin with CRITIQUE: and verify the exact minimal fix design (Rust SidecarDiagnostics command + error capture).
+      - Turn 4 or later: Only once all edge cases are resolved across at least 4 turns, reply with AGREEMENT: and a concise numbered fix plan.
+      Do not modify any file and do not run commands. Keep each reply under 250 words.
+
+  - id: "apply_tauri_diagnostics"
+    depends_on: ["debate_tauri_issues"]
+    role: "rust_architect"
+    isolation: "git_worktree"
+    permissions:
+      level: edit
+      fs:
+        write:
+          - "desktop/src-tauri/src/lib.rs"
+          - "desktop/src-tauri/tauri.conf.json"
+          - "desktop/src/api.ts"
+          - "desktop/src/App.tsx"
+          - "src/Controller/DesktopTokenSubscriber.php"
+    input_artifacts:
+      - "desktop/src-tauri/src/lib.rs"
+      - "desktop/src-tauri/tauri.conf.json"
+      - "desktop/src/api.ts"
+      - "desktop/src/App.tsx"
+    board:
+      read:
+        steps: ["debate_tauri_issues"]
+      post: [result]
+    goal: >-
+      Implement the agreed Tauri automatic diagnostics and fixes from debate_tauri_issues so Tauri detects PHP version
+      mismatches, sidecar stderr/exit errors, and external dev backend issues, and surfaces clear diagnostics to the UI.
+      End your reply with:
+      BOARD result: <one sentence summarizing the implemented diagnostics>

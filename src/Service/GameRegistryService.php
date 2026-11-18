@@ -15,6 +15,7 @@ class GameRegistryService
             'pick' => 5,
             'pick_min' => 5,
             'pick_max' => 5,
+            'system_max' => 12,
             'from' => 42,
             'extra' => 0,
             'extra_from' => 0,
@@ -25,6 +26,7 @@ class GameRegistryService
             'pick' => 6,
             'pick_min' => 6,
             'pick_max' => 6,
+            'system_max' => 12,
             'from' => 49,
             'extra' => 0,
             'extra_from' => 0,
@@ -35,6 +37,7 @@ class GameRegistryService
             'pick' => 6,
             'pick_min' => 6,
             'pick_max' => 6,
+            'system_max' => 12,
             'from' => 49,
             'extra' => 0,
             'extra_from' => 0,
@@ -45,6 +48,7 @@ class GameRegistryService
             'pick' => 5,
             'pick_min' => 5,
             'pick_max' => 5,
+            'system_max' => 12,
             'from' => 50,
             'extra' => 2,
             'extra_from' => 12,
@@ -105,6 +109,7 @@ class GameRegistryService
             'pick' => 6,
             'pick_min' => 6,
             'pick_max' => 6,
+            'system_max' => 12,
             'from' => 32,
             'extra' => 0,
             'extra_from' => 0,
@@ -159,6 +164,46 @@ class GameRegistryService
         $range = $this->getPickRange($gameType);
 
         if ($requested === null || !$this->isVariablePick($gameType)) {
+            return $range['default'];
+        }
+
+        return max($range['min'], min($range['max'], $requested));
+    }
+
+    /**
+     * Czy gra obsługuje zakłady systemowe (System Pełny, np. 7-12 liczb w Lotto / MiniLotto / EuroJackpot).
+     */
+    public function supportsFullSystem(string $gameType): bool
+    {
+        $c = $this->getGameConfig($gameType);
+
+        return (int) ($c['system_max'] ?? $c['pick']) > (int) $c['pick'];
+    }
+
+    /**
+     * Zakres liczby skreśleń w Systemie Pełnym (np. 6..12 dla Lotto, 5..12 dla MiniLotto).
+     *
+     * @return array{min: int, max: int, default: int}
+     */
+    public function getSystemPickRange(string $gameType): array
+    {
+        $c = $this->getGameConfig($gameType);
+        $base = (int) $c['pick'];
+
+        return [
+            'min' => $base,
+            'max' => (int) ($c['system_max'] ?? $base),
+            'default' => $base,
+        ];
+    }
+
+    /**
+     * Rozwiązuje żądany rozmiar Systemu Pełnego (np. --system=10 dla Lotto -> 10 liczb).
+     */
+    public function resolveSystemPick(string $gameType, ?int $requested): int
+    {
+        $range = $this->getSystemPickRange($gameType);
+        if ($requested === null || !$this->supportsFullSystem($gameType)) {
             return $range['default'];
         }
 
@@ -230,5 +275,4 @@ class GameRegistryService
 
         return $date->format('Y-m-d\TH:i:s\Z');
     }
-
 }

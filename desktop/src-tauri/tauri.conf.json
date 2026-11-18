@@ -1,0 +1,40 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Lotto Agent",
+  "version": "1.0.0",
+  "identifier": "com.yaotzin1.lottoagent",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Lotto Agent — Combinatorial & ReAct AI Suite",
+        "width": 1340,
+        "height": 860,
+        "minWidth": 1024,
+        "minHeight": 680,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:* http://localhost:*; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "resources": {
+      "../../bin": "php-app/bin",
+      "../../config": "php-app/config",
+      "../../data/lotto_draws.json": "php-app/data/lotto_draws.json",
+      "../../public": "php-app/public",
+      "../../src": "php-app/src",
+      "../../vendor": "php-app/vendor",
+      "../../composer.json": "php-app/composer.json"
+    }
+  }
+}

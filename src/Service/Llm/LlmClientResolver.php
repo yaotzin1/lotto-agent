@@ -74,6 +74,16 @@ class LlmClientResolver
                 'displayName' => 'Google Gemini',
                 'defaultModel' => 'gemini-3.8-flash',
                 'models' => [
+                    'gemini-4-hydrogen' => [
+                        'name' => 'Gemini 4 Hydrogen',
+                        'description' => 'Latest Gemini 4 Hydrogen reasoning, tool-use, and analytical model',
+                        'recommendedFor' => 'Deep combinatorial analysis, ReAct loops & strategic commentary',
+                    ],
+                    'gemini-4-hydrogen-lite' => [
+                        'name' => 'Gemini 4 Hydrogen Lite',
+                        'description' => 'Fast, lightweight Gemini 4 Hydrogen model',
+                        'recommendedFor' => 'Low-latency ReAct loops & quick summaries',
+                    ],
                     'gemini-3.8-flash' => [
                         'name' => 'Gemini 3.8 Flash',
                         'description' => 'Latest generation high-throughput reasoning and function calling model',
@@ -101,6 +111,8 @@ class LlmClientResolver
                     ],
                 ],
                 'fallbacks' => [
+                    'gemini-4-hydrogen',
+                    'gemini-4-hydrogen-lite',
                     'gemini-3.8-flash',
                     'gemini-3.7-flash',
                     'gemini-3.6-flash',
