@@ -1,3 +1,7 @@
+parameters:
+    # Fallback so cache:clear / CLI / packaged desktop app work without .env
+    env(DEFAULT_URI): 'http://localhost'
+
 framework:
     router:
         # Configure how to generate URLs in non-HTTP contexts, such as CLI commands.
