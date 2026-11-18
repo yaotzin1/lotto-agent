@@ -60,6 +60,7 @@ class LottoTuiCommand extends Command
     {
         $this->addOption('game', 'g', InputOption::VALUE_REQUIRED, 'Typ gry do analizy');
         $this->addOption('pick', 'p', InputOption::VALUE_REQUIRED, 'Ile liczb ma wytypować agent w jednym zakładzie');
+        $this->addOption('system', 'sys', InputOption::VALUE_REQUIRED, 'Rozmiar Systemu Pełnego (np. 7-12 liczb w rozkładzie Gaussa i Par EMA)');
         $this->addOption('sessions', 's', InputOption::VALUE_REQUIRED, 'Ilość ostatnich losowań do pobrania statystyk');
         $this->addOption('months', 'mo', InputOption::VALUE_REQUIRED, 'Z ilu ostatnich miesięcy pobrać statystyki');
         $this->addOption('bets', 'b', InputOption::VALUE_REQUIRED, 'Ile zakładów ma wygenerować system?');
@@ -213,7 +214,11 @@ class LottoTuiCommand extends Command
         // Liczba skreśleń pochodzi z rejestru; --pick działa TYLKO tam, gdzie gra
         // faktycznie na to pozwala (wcześniej przyjmowano dowolną wartość >= 1
         // nawet dla gier o stałej liczbie skreśleń, np. --pick=3 dla Lotto).
-        if ($this->gameRegistryService->isVariablePick($gameType)) {
+        $baseGamePick = (int) ($game['pick'] ?? 6);
+        $systemOpt = $input->getOption('system');
+        if ($systemOpt !== null && is_numeric($systemOpt) && $this->gameRegistryService->supportsFullSystem($gameType)) {
+            $game['pick'] = $this->gameRegistryService->resolveSystemPick($gameType, (int) $systemOpt);
+        } elseif ($this->gameRegistryService->isVariablePick($gameType)) {
             $range = $this->gameRegistryService->getPickRange($gameType);
             $pickOpt = $input->getOption('pick');
 
@@ -274,6 +279,7 @@ class LottoTuiCommand extends Command
                 'preset_syndicate_ai' => '🔥 Szybki Syndykat AI + Kaskada Sąsiadów (Gemini 3.8 + Tryb [9] — Rekomendowany)',
                 'preset_zero_drop' => '🎯 Pełny Bęben Zero-Drop (100% liczb bębna + Tryb [9] Kaskada Sąsiadów)',
                 'preset_wheeling' => '📐 System Skrócony Wheeling (t-Design Set-Cover — Zawężona pula + Gwarancja 3/k i 4/k)',
+                'preset_full_system' => '🔟 System Pełny / Blokowy (7–12 liczb w rozkładzie Gaussa i Par EMA + opcja rozpisania na zakłady proste)',
                 'custom' => '⚙️  Konfiguracja Zaawansowana (Kreator krok po kroku — pełna kontrola wszystkich opcji)',
             ], 'preset_syndicate_ai');
         }
@@ -296,6 +302,20 @@ class LottoTuiCommand extends Command
             $includeNeighbours = true;
             $presetPoolSize = min($maxNum, max((int) $game['pick'] + 4, (int) $game['pick'] * 2 + 2));
             $presetMode = '1';
+        } elseif ($selectedPreset === 'preset_full_system') {
+            $sysRange = $this->gameRegistryService->getSystemPickRange($gameType);
+            $sysChoices = [];
+            for ($sp = max($sysRange['min'], 7); $sp <= $sysRange['max']; $sp++) {
+                $combs = (int) round($this->statisticalOptimizer->maxDistinctBets($sp, $baseGamePick));
+                $sysChoices[(string) $sp] = sprintf('System %d liczb (%d zakładów prostych w pełnym systemie)', $sp, $combs);
+            }
+            if ($sysChoices !== []) {
+                $chosenSys = (int) $this->promptSelect('Wybierz rozmiar Systemu Pełnego (rozkład Gaussa + Synergia Par EMA):', $sysChoices, '10');
+                $game['pick'] = $chosenSys;
+            }
+            $poolMode = 'Manual';
+            $includeNeighbours = true;
+            $presetMode = '8';
         } else {
             if ($poolModeOpt && in_array(strtolower($poolModeOpt), ['ai', 'manual', 'stride', 'decades', 'decade'], true)) {
                 $poolMode = match (strtolower($poolModeOpt)) {
@@ -811,6 +831,8 @@ class LottoTuiCommand extends Command
                     'export' => '💾 Zapisz kupony do pliku (TXT / CSV / JSON w var/exports/)',
                     'deep_stats' => '📈 Pokaż szczegółowy rozkład Gaussa, Top Pary, Trójki (3-Cliques) i pokrycie t-Design',
                     'rerun_mode' => '🔄 Przelicz tę samą pulę w innym trybie (np. porównaj Tryb 9, 8, 7, 1)',
+                    'full_system' => '🔟 Wygeneruj Systemy Pełne (7–12 liczb, np. System 10) w rozkładzie Gaussa i Par EMA',
+                    'wheel_systems' => '📐 Koszyki Systemowe (np. 10 liczb z Gaussa/EMA) -> Rozpisz na zakłady proste (np. 9x10=90 lub 5x20=100)',
                 ], 'finish');
 
                 if ($postAction === 'finish') {
@@ -819,10 +841,11 @@ class LottoTuiCommand extends Command
 
                 if ($postAction === 'export') {
                     $format = $this->promptSelect('Wybierz format eksportu kuponów:', [
+                        'js' => '🌐 JS Auto-Filler dla lotto.pl (Skrypt do Konsoli Firefoksa F12 — Auto-Zapisz + Koszyk)',
                         'txt' => '📄 TXT (Czytelny arkusz do przepisania na blankiety)',
                         'csv' => '📊 CSV (Arkusz kalkulacyjny Excel / LibreOffice)',
                         'json' => '🧩 JSON (Pełny zrzut danych ze statystykami)',
-                    ], 'txt');
+                    ], 'js');
 
                     $exportPath = $this->exportGeneratedBets($gameType, $mode, $fullPool, $allFinalBets, $extraSets, $statsReport, $format);
                     $io->success(sprintf('Zapisano %d zakładów do pliku: %s', count($allFinalBets), $exportPath));
@@ -832,6 +855,124 @@ class LottoTuiCommand extends Command
                 if ($postAction === 'deep_stats') {
                     $subsetsCov = $this->generatorService->calculateSubsetsCoverage($fullPool, $allFinalBets);
                     $this->statsWindowRenderer->renderDeepSynergyAndGaussianDetails($io, $statsReport, $subsetsCov);
+                    continue;
+                }
+
+                if ($postAction === 'full_system') {
+                    $sysRange = $this->gameRegistryService->getSystemPickRange($gameType);
+                    $maxSys = max($baseGamePick + 1, $sysRange['max']);
+                    $sysPick = (int) $this->promptInput(
+                        sprintf('Ile liczb w każdym Systemie Pełnym (%d-%d, rekomendowane: 10)?', $baseGamePick + 1, $maxSys),
+                        '10'
+                    );
+                    $sysPick = max($baseGamePick, min(min(count($fullPool), $maxSys), $sysPick));
+                    $game['pick'] = $sysPick;
+                    $gameForPipeline['pick'] = $sysPick;
+                    $minZeroDrop = (int) ceil(count($fullPool) / max(1, $sysPick));
+                    $betsTotal = (int) $this->promptInput(
+                        sprintf('Ile zestawów Systemu %d-liczbowego wygenerować? (min. %d dla 100%% pokrycia puli)', $sysPick, $minZeroDrop),
+                        (string) max($minZeroDrop, 9)
+                    );
+                    if (!in_array($mode, ['8', '9', '7'], true)) {
+                        $mode = '8';
+                    }
+                    break;
+                }
+
+                if ($postAction === 'wheel_systems') {
+                    $currentBetSize = isset($allFinalBets[0]) ? count($allFinalBets[0]) : $baseGamePick;
+                    if ($currentBetSize > $baseGamePick) {
+                        $systemBaskets = $allFinalBets;
+                        $sysSize = $currentBetSize;
+                        $io->note(sprintf('Używam %d aktualnie wygenerowanych koszyków Systemu %d-liczbowego.', count($systemBaskets), $sysSize));
+                    } else {
+                        $sysSize = (int) $this->promptInput(
+                            sprintf('Ile liczb ma mieć każdy koszyk systemowy (%d-12, rekomendowane: 10)?', $baseGamePick + 1),
+                            '10'
+                        );
+                        $sysSize = max($baseGamePick + 1, min(min(12, count($fullPool)), $sysSize));
+                        $minBaskets = (int) ceil(count($fullPool) / $sysSize);
+                        $numBaskets = (int) $this->promptInput(
+                            sprintf('Ile koszyków %d-liczbowych wygenerować w rozkładzie Gaussa i Par EMA? (min. %d dla 100%% bębna, np. 9 lub 5)', $sysSize, $minBaskets),
+                            '9'
+                        );
+                        $numBaskets = max(1, $numBaskets);
+                        $sysResult = $this->statisticalOptimizer->optimizeBetsWithFullCoverage(
+                            $fullPool,
+                            $sysSize,
+                            $numBaskets,
+                            $history['frequencies'],
+                            $maxNum,
+                            ['draws' => $history['draws']]
+                        );
+                        $systemBaskets = $sysResult['bets'];
+                        $gaussSys = $this->statisticalOptimizer->calculateGaussianParameters($maxNum, $sysSize);
+                        $io->section(sprintf(
+                            '🔟 WYGENEROWANE KOSZYKI SYSTEMOWE (%d x %d liczb | Gauss: %s, środek: %d)',
+                            count($systemBaskets),
+                            $sysSize,
+                            $gaussSys['optimal_range_str'],
+                            $gaussSys['expected_sum']
+                        ));
+                        $sysRows = [];
+                        foreach ($systemBaskets as $sIdx => $sBet) {
+                            $oddCnt = count(array_filter($sBet, static fn(int $x): bool => $x % 2 !== 0));
+                            $sysRows[] = [
+                                sprintf('Koszyk #%d', $sIdx + 1),
+                                implode(', ', array_map(static fn(int $x): string => sprintf('%2d', $x), $sBet)),
+                                array_sum($sBet),
+                                sprintf('%d:%d', $oddCnt, count($sBet) - $oddCnt),
+                            ];
+                        }
+                        $io->table(['System', sprintf('Wytypowane %d liczb (Gauss + EMA)', $sysSize), 'Suma', 'Parzystość'], $sysRows);
+                    }
+
+                    $defaultPerBasket = $sysSize === 10 ? '10' : ($sysSize <= 9 ? '10' : '15');
+                    $betsPerBasket = (int) $this->promptInput(
+                        sprintf('Ile zakładów prostych (%d-liczbowych) rozpisać z KAŻDEGO koszyka %d-liczbowego? (np. 10 lub 20)', $baseGamePick, $sysSize),
+                        $defaultPerBasket
+                    );
+                    $betsPerBasket = max(1, $betsPerBasket);
+
+                    $expandedBets = [];
+                    foreach ($systemBaskets as $sBet) {
+                        foreach ($this->generatorService->generateBalancedShorthand($sBet, $baseGamePick, $betsPerBasket) as $eb) {
+                            $expandedBets[] = $eb;
+                        }
+                    }
+
+                    $allFinalBets = $expandedBets;
+                    $game['pick'] = $baseGamePick;
+                    $gameForPipeline['pick'] = $baseGamePick;
+                    $statsReport = null;
+
+                    $io->success(sprintf(
+                        'Rozpisano %d koszyków (%d-liczbowych) po %d zakładów = łącznie %d zakładów prostych (%d z %d)!',
+                        count($systemBaskets),
+                        $sysSize,
+                        $betsPerBasket,
+                        count($allFinalBets),
+                        $baseGamePick,
+                        $maxNum
+                    ));
+
+                    $this->statsWindowRenderer->renderBets($io, $allFinalBets, [], null, StatsWindowRenderer::SHOW_ALL);
+                    $this->statsWindowRenderer->renderDrumHeatmap($io, $allFinalBets, $fullPool, $maxNum, $latestDraw);
+
+                    if (isset($systemBaskets[0])) {
+                        $sampleBasket = $systemBaskets[0];
+                        $sampleWheel = $this->generatorService->generateBalancedShorthand($sampleBasket, $baseGamePick, $betsPerBasket);
+                        $basketCov = $this->generatorService->calculateCoverage($sampleBasket, $sampleWheel, $baseGamePick);
+                        $covRows = [];
+                        for ($h = 3; $h <= $baseGamePick; $h++) {
+                            $pct = $basketCov['guarantees'][$h] ?? 0.0;
+                            $covRows[] = [
+                                sprintf('Gwarancja %d/%d wewnątrz koszyka (%d liczb)', $h, $baseGamePick, $sysSize),
+                                sprintf('%.2f%%', $pct),
+                            ];
+                        }
+                        $io->table(['Gwarancja Systemowa (przy trafieniu 6 kul w koszyk)', 'Prawdopodobieństwo'], $covRows);
+                    }
                     continue;
                 }
 
@@ -882,6 +1023,24 @@ class LottoTuiCommand extends Command
         $timestamp = date('Y-m-d_His');
         $safeGame = preg_replace('/[^a-zA-Z0-9_-]/', '', $gameType) ?: 'Lotto';
         $filename = sprintf('%s/kupony_%s_tryb%s_%s.%s', $exportDir, $safeGame, $mode, $timestamp, $format);
+
+        if ($format === 'js') {
+            $gameCfg = $this->gameRegistryService->getGame($gameType);
+            $maxNum = (int) ($gameCfg['from'] ?? 49);
+            $template = @file_get_contents(dirname(__DIR__, 2) . '/var/exports/szybkie600_lotto_pl_autofill.js');
+            if ($template !== false && str_contains($template, 'const COUPONS =')) {
+                $coupons = array_chunk(array_values($bets), 10);
+                $js = preg_replace(
+                    '/const GAME_NAME = .*?const COUPONS = \[.*?\];/s',
+                    'const GAME_NAME = ' . json_encode(strtoupper($gameType)) . ";\n  const MAX_NUM = {$maxNum};\n  const COUPONS = " . json_encode($coupons) . ';',
+                    $template,
+                    1
+                );
+                file_put_contents($filename, (string) $js);
+
+                return $filename;
+            }
+        }
 
         if ($format === 'json') {
             $payload = [

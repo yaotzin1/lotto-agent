@@ -1,0 +1,73 @@
+version: "1.0"
+name: "lotto-agent-spec-review"
+
+# Generates/reviews docs/desktop-spec.md using Claude + MCP (Context7 for Tauri v2 / Symfony 8.2 docs).
+# Set mcp_policy: optional so the flow still runs if npx/Context7 is unavailable offline.
+#
+# Run:
+#   node D:\projects\private\Indaba\packages\cli\dist\bin.js validate spec-review.workflow.ai.yml
+#   node D:\projects\private\Indaba\packages\cli\dist\bin.js run spec-review.workflow.ai.yml
+
+defaults:
+  mcp_policy: optional
+
+mcp_servers:
+  context7:
+    command: "npx"
+    args: ["-y", "@upstash/context7-mcp"]
+
+roles:
+  architect:
+    runner: ["claude-code", "acp"]
+    agent: "claude"
+    mcp: ["context7"]
+  reviewer:
+    runner: ["claude-code", "acp"]
+    agent: "claude"
+    mcp: ["context7"]
+
+steps:
+  - id: "spec_review"
+    role: "reviewer"
+    consensus_with: ["architect"]
+    decision_type: "consensus"
+    arbiter: "human"
+    isolation: "git_worktree"
+    permissions:
+      level: read
+    input_artifacts: ["docs/desktop-spec.md"]
+    goal: >-
+      Review docs/desktop-spec.md against AGENTS.md, composer.json, src/Service/, and .github/workflows/ci.yml.
+      Use the context7 MCP server (when available) to verify Tauri v2 sidecar/externalBin conventions and Symfony 8.2
+      kernel/env overrides. Check for: missing PHP extensions, localhost security gaps, read-only bundle path issues on
+      Windows/macOS/Linux, and breaking changes to existing CLI/TUI commands. Do not modify any file and do not run
+      commands. Keep your reply under 200 words.
+      AGREEMENT: means you accept the other participant's findings. CRITIQUE: means a finding is missing, wrong, or
+      unclear. In your first reply list up to five findings and begin with CRITIQUE:.
+
+  - id: "refine_spec"
+    depends_on: ["spec_review"]
+    role: "architect"
+    isolation: "git_worktree"
+    permissions:
+      level: edit
+      fs:
+        write: ["docs/desktop-spec.md"]
+    input_artifacts: ["docs/desktop-spec.md"]
+    board:
+      read:
+        steps: ["spec_review"]
+      post: [result]
+    goal: >-
+      Update docs/desktop-spec.md to address every accepted finding from spec_review. Keep the spec concise,
+      concrete, and aligned with AGENTS.md and src/Service/. Do not modify any other file and do not run commands.
+      End your reply with:
+      BOARD result: <one sentence summarizing the spec updates>
+
+  - id: "checkpoint_spec"
+    depends_on: ["refine_spec"]
+    runner: "shell"
+    commands:
+      - "git add docs/desktop-spec.md"
+      - "git commit -q --allow-empty -m \"desktop: refine spec after Claude MCP review\""
+      - "git branch -f indaba/desktop-spec HEAD"

@@ -1,0 +1,84 @@
+name: CI — Unit, AI Agent & Mutation Tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: PHP 8.5 Unit, AI Prompts & Mutation Suite
+    runs-on: ubuntu-latest
+
+    env:
+      APP_ENV: test
+      APP_SECRET: ci-test-secret-lotto-agent
+      LOTTO_API_KEY: test-lotto-key
+      GEMINI_API_KEY: test-gemini-key
+      ANTHROPIC_API_KEY: test-anthropic-key
+      OPENAI_API_KEY: test-openai-key
+      DEEPSEEK_API_KEY: test-deepseek-key
+      AI_PROVIDER: gemini
+      AI_MODEL: gemini-3.8-flash
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup PHP 8.5
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.5'
+          extensions: ctype, iconv, zip, mbstring
+          ini-values: memory_limit=512M
+          coverage: none
+          tools: composer:v2
+
+      - name: Prepare environment file
+        run: cp .env.dev.example .env.dev
+
+      - name: Get Composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-php-8.5-composer-${{ hashFiles('**/composer.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-php-8.5-composer-
+
+      - name: Install Composer dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Validate Composer configuration
+        run: composer validate --strict
+
+      - name: Lint Symfony container & YAML configuration
+        run: |
+          php bin/console lint:yaml config
+          php bin/console lint:container
+
+      - name: Run Unit Test Suite
+        run: vendor/bin/phpunit tests/Unit/Service
+
+      - name: Run AI Prompts, ReAct Tool Injection & Parameter Regression Tests
+        run: |
+          vendor/bin/phpunit --testdox \
+            tests/Unit/Service/ParameterHandlingAndHistorySliceTest.php \
+            tests/Unit/Service/ReActAgentAndPromptsTest.php \
+            tests/Unit/Service/LlmClientResolverTest.php \
+            tests/Unit/Service/GeminiApiClientTest.php \
+            tests/Unit/Service/AnthropicApiClientTest.php \
+            tests/Unit/Service/OpenAiApiClientTest.php
+
+      - name: Run Mutation Testing Suite (100% MSI Gate)
+        run: vendor/bin/phpunit --testdox tests/Unit/Mutation/MutationTestingSuiteTest.php

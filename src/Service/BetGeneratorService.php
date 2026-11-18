@@ -104,15 +104,27 @@ class BetGeneratorService
             throw new \InvalidArgumentException('Rozmiar bloku i liczba bloków muszą być dodatnie.');
         }
 
-        // Geometric Interleaving: wybieramy krok (stride) względnie pierwszy z wielkością puli
-        $stride = $this->coprimeStride($poolCount);
+        // Geometric Interleaving + Outside-In Folding:
+        // 1. Krok względnie pierwszy (coprime stride) rozbija sąsiedztwo liniowe,
+        // 2. Złożenie naprzemienne (początek/koniec) gwarantuje, że KAŻDY wycięty blok (np. 24/25, 21/21, 25/25, L1/L2)
+        //    ma idealny środek ciężkości Gaussa (~150 w Lotto, ~107.5 w Mini, ~127.5 w EuroJackpot) i równy rozkład dekad.
+        $folded = [];
+        $left = 0;
+        $right = $poolCount - 1;
+        while ($left <= $right) {
+            $folded[] = $pool[$left++];
+            if ($left <= $right) {
+                $folded[] = $pool[$right--];
+            }
+        }
 
+        $stride = $this->coprimeStride($poolCount);
         $interleavedPool = [];
         $visited = array_fill(0, $poolCount, false);
         $currentIndex = 0;
 
         for ($i = 0; $i < $poolCount; $i++) {
-            $interleavedPool[] = $pool[$currentIndex];
+            $interleavedPool[] = $folded[$currentIndex];
             $visited[$currentIndex] = true;
 
             $nextIndex = ($currentIndex + $stride) % $poolCount;
@@ -258,18 +270,26 @@ class BetGeneratorService
         $tripletCounts = [];
 
         $trackTriplets = ($pick >= 3);
-        $trialsPerTicket = $poolSize <= 24 ? min(20, max(10, $poolSize)) : 8;
+        $trialsPerTicket = $poolSize <= 24 ? min(20, max(10, $poolSize)) : 12;
         $enableOneOpt = ($poolSize <= 26 && $pick >= 3);
+        $poolMean = $poolSize > 0 ? (array_sum($pool) / $poolSize) : 0.0;
+        $targetSum = $pick * $poolMean;
+        $maxParityAllowed = (int) ceil($pick / 2);
 
         for ($ticketIdx = 0; $ticketIdx < $targetLimit; $ticketIdx++) {
             // Posortuj pulę wg najniższego dotychczasowego użycia (oraz najmniejszego nasycenia par)
+            // Przy równym użyciu przepleć rozkład (low/high), by nie zaczynać wyłącznie od 1, 2, 3...
             $sortedByUsage = $pool;
-            usort($sortedByUsage, static function (int $a, int $b) use ($usageCounts, $pairCounts): int {
+            usort($sortedByUsage, static function (int $a, int $b) use ($usageCounts, $pairCounts, $ticketIdx): int {
                 $cmp = $usageCounts[$a] <=> $usageCounts[$b];
                 if ($cmp !== 0) {
                     return $cmp;
                 }
-                return array_sum($pairCounts[$a]) <=> array_sum($pairCounts[$b]);
+                $pCmp = array_sum($pairCounts[$a]) <=> array_sum($pairCounts[$b]);
+                if ($pCmp !== 0) {
+                    return $pCmp;
+                }
+                return (($a * 7 + $ticketIdx * 13) % 53) <=> (($b * 7 + $ticketIdx * 13) % 53);
             });
 
             $bestTicket = null;
@@ -282,14 +302,25 @@ class BetGeneratorService
                 $bet = [$sortedByUsage[$seedIdx]];
 
                 $available = $pool;
-                if ($trial > 0) {
-                    shuffle($available);
-                }
+                shuffle($available);
 
                 while (count($bet) < $pick) {
                     $bestCandidate = null;
                     $lowestStepCost = PHP_INT_MAX;
                     $betLen = count($bet);
+                    $currentSum = array_sum($bet);
+                    $remainingSlots = $pick - $betLen;
+
+                    $oddCount = 0;
+                    $decadeCounts = [];
+                    foreach ($bet as $bNum) {
+                        if ($bNum % 2 !== 0) {
+                            $oddCount++;
+                        }
+                        $dec = intdiv(max(0, $bNum - 1), 10);
+                        $decadeCounts[$dec] = ($decadeCounts[$dec] ?? 0) + 1;
+                    }
+                    $evenCount = $betLen - $oddCount;
 
                     foreach ($available as $num) {
                         if (in_array($num, $bet, true)) {
@@ -321,7 +352,24 @@ class BetGeneratorService
                             }
                         }
 
-                        $stepCost = $uCost + $pCost + $tCost;
+                        // Makro-balans (Gauss, dekady, parzystość) jako tie-breaker (< 60 pkt, więc nie nadpisuje Set-Cover)
+                        $candDec = intdiv(max(0, $num - 1), 10);
+                        $inDec = $decadeCounts[$candDec] ?? 0;
+                        $macroCost = ($inDec === 0) ? 0 : ($inDec === 1 ? 10 : 24);
+
+                        $isOdd = ($num % 2 !== 0);
+                        if (($isOdd && $oddCount >= $maxParityAllowed) || (!$isOdd && $evenCount >= $maxParityAllowed)) {
+                            $macroCost += 8;
+                        }
+
+                        if ($remainingSlots === 1) {
+                            $macroCost += (int) min(22, round(abs(($currentSum + $num) - $targetSum) * 0.5));
+                        } else {
+                            $idealNext = ($targetSum - $currentSum) / $remainingSlots;
+                            $macroCost += (int) min(12, round(abs($num - $idealNext) * 0.35));
+                        }
+
+                        $stepCost = $uCost + $pCost + $tCost + $macroCost;
                         if ($stepCost < $lowestStepCost) {
                             $lowestStepCost = $stepCost;
                             $bestCandidate = $num;
@@ -342,7 +390,7 @@ class BetGeneratorService
 
                 // 1-opt Local Search (Kempe-style single element swap) maksymalizujący pokrycie nowych trójek i par
                 if ($enableOneOpt) {
-                    $bet = $this->refineTicketOneOpt($bet, $pool, $seenBets, $usageCounts, $pairCounts, $tripletCounts);
+                    $bet = $this->refineTicketOneOpt($bet, $pool, $seenBets, $usageCounts, $pairCounts, $tripletCounts, $targetSum);
                 }
 
                 $betKey = implode('-', $bet);
@@ -350,7 +398,7 @@ class BetGeneratorService
                     continue;
                 }
 
-                $ticketCost = $this->evaluateTicketWheelingCost($bet, $usageCounts, $pairCounts, $tripletCounts, $trackTriplets);
+                $ticketCost = $this->evaluateTicketWheelingCost($bet, $usageCounts, $pairCounts, $tripletCounts, $trackTriplets, $targetSum);
                 if ($ticketCost < $bestTicketCost) {
                     $bestTicketCost = $ticketCost;
                     $bestTicket = $bet;
@@ -475,9 +523,10 @@ class BetGeneratorService
         array $seenBets,
         array $usageCounts,
         array $pairCounts,
-        array $tripletCounts
+        array $tripletCounts,
+        float $targetSum = 0.0
     ): array {
-        $currentCost = $this->evaluateTicketWheelingCost($bet, $usageCounts, $pairCounts, $tripletCounts, true);
+        $currentCost = $this->evaluateTicketWheelingCost($bet, $usageCounts, $pairCounts, $tripletCounts, true, $targetSum);
         if ($currentCost === 0) {
             return $bet;
         }
@@ -502,7 +551,7 @@ class BetGeneratorService
                     continue;
                 }
 
-                $cost = $this->evaluateTicketWheelingCost($candidate, $usageCounts, $pairCounts, $tripletCounts, true);
+                $cost = $this->evaluateTicketWheelingCost($candidate, $usageCounts, $pairCounts, $tripletCounts, true, $targetSum);
                 if ($cost < $bestCost) {
                     $bestCost = $cost;
                     $bestBet = $candidate;
@@ -526,14 +575,22 @@ class BetGeneratorService
         array $usageCounts,
         array $pairCounts,
         array $tripletCounts,
-        bool $trackTriplets
+        bool $trackTriplets,
+        float $targetSum = 0.0
     ): int {
         $cost = 0;
         $len = count($bet);
+        $oddCount = 0;
+        $decadeCounts = [];
 
         for ($i = 0; $i < $len; $i++) {
             $n1 = $bet[$i];
             $cost += $usageCounts[$n1] * 60;
+            if ($n1 % 2 !== 0) {
+                $oddCount++;
+            }
+            $dec = intdiv(max(0, $n1 - 1), 10);
+            $decadeCounts[$dec] = ($decadeCounts[$dec] ?? 0) + 1;
 
             for ($j = $i + 1; $j < $len; $j++) {
                 $n2 = $bet[$j];
@@ -552,6 +609,20 @@ class BetGeneratorService
                     }
                 }
             }
+        }
+
+        if ($targetSum > 0.0 && $len > 0) {
+            $macroPenalty = (int) min(22, round(abs(array_sum($bet) - $targetSum) * 0.45));
+            foreach ($decadeCounts as $dc) {
+                if ($dc >= 3) {
+                    $macroPenalty += ($dc - 2) * 14;
+                }
+            }
+            $evenCount = $len - $oddCount;
+            if ($len >= 4 && ($oddCount === 0 || $evenCount === 0)) {
+                $macroPenalty += 16;
+            }
+            $cost += min(55, $macroPenalty);
         }
 
         return $cost;

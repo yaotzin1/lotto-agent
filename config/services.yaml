@@ -23,6 +23,14 @@ parameters:
     deepseek_api_key: '%env(DEEPSEEK_API_KEY)%'
     env(OPENAI_BASE_URL): ''
     openai_base_url: '%env(OPENAI_BASE_URL)%'
+    env(LOTTO_DESKTOP_TOKEN): ''
+    lotto_desktop_token: '%env(LOTTO_DESKTOP_TOKEN)%'
+    env(LOTTO_APP_DATA_DIR): ''
+    lotto_app_data_dir: '%env(LOTTO_APP_DATA_DIR)%'
+    env(LOTTO_ENV_FILE): ''
+    lotto_env_file: '%env(LOTTO_ENV_FILE)%'
+    env(LOTTO_STORAGE_DIR): '%kernel.project_dir%/var/draw-history'
+    env(LOTTO_DATA_DIR): '%kernel.project_dir%/data'
 
 services:
     # default configuration for services in *this* file
@@ -39,9 +47,13 @@ services:
     App\:
         resource: '../src/'
 
-    App\Service\AgentTools\ToolRegistry:
+    App\Service\DrawHistoryProvider:
         arguments:
-            $tools: !tagged_iterator app.lotto_agent_tool
+            $storageDir: '%env(resolve:LOTTO_STORAGE_DIR)%'
+
+    App\Service\DrawArchiveService:
+        arguments:
+            $dataDir: '%env(resolve:LOTTO_DATA_DIR)%'
 
     App\Service\Llm\LlmClientInterface: '@App\Service\GeminiApiClient'
 

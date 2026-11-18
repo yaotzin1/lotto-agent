@@ -59,7 +59,8 @@ class LottoGeneratorCommand extends Command
         $this->addOption('cover-decades', 'cd', InputOption::VALUE_NONE, 'Wymuś równomierne pokrycie wszystkich dekad');
         $this->addOption('decade-strategy', null, InputOption::VALUE_REQUIRED, 'Strategia doboru wewnątrz dekad (hot/balanced/random)', 'hot');
         $this->addOption('pool', null, InputOption::VALUE_REQUIRED, 'Pula liczb dla trybu Manual (np. "all" albo "1,5,12,18")');
-        $this->addOption('pick', null, InputOption::VALUE_REQUIRED, 'Ile liczb skreślać na kuponie (tylko gry o zmiennej liczbie skreśleń: MultiMulti, Keno)');
+        $this->addOption('pick', null, InputOption::VALUE_REQUIRED, 'Ile liczb skreślać na kuponie (gry o zmiennej liczbie skreśleń lub System Pełny 7-12)');
+        $this->addOption('system', 'sys', InputOption::VALUE_REQUIRED, 'Rozmiar Systemu Pełnego (np. 7-12 liczb w rozkładzie Gaussa i Par EMA dla Lotto/MiniLotto/EuroJackpot)');
         $this->addOption('max-rows', null, InputOption::VALUE_REQUIRED, 'Ogranicz liczbę wierszy w tabeli wyników (domyślnie: wszystkie)');
         $this->addOption('mode', 'm', InputOption::VALUE_REQUIRED, 'Tryb pracy generatora (1-9)');
         $this->addOption('latest-draw', 'ld', InputOption::VALUE_REQUIRED, 'Liczby ostatniego losowania jako baza sąsiadów dla Trybu 9 (np. "2,3,19,23,42,49")');
@@ -143,7 +144,10 @@ class LottoGeneratorCommand extends Command
         // --pool-size NIE słuzy juz do tego: wcześniej ta sama opcja oznaczała
         // jednocześnie "ile skreśleń" i "jak duża pula", więc --pool-size=6 dawało
         // pulę równą liczbie skreśleń, czyli jeden możliwy kupon.
-        if ($this->gameRegistryService->isVariablePick($gameType)) {
+        $systemOpt = $input->getOption('system');
+        if ($systemOpt !== null && is_numeric($systemOpt) && $this->gameRegistryService->supportsFullSystem($gameType)) {
+            $game['pick'] = $this->gameRegistryService->resolveSystemPick($gameType, (int) $systemOpt);
+        } elseif ($this->gameRegistryService->isVariablePick($gameType)) {
             $range = $this->gameRegistryService->getPickRange($gameType);
             $pickOpt = $input->getOption('pick');
 

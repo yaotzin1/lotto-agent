@@ -1,0 +1,208 @@
+version: "1.0"
+name: "lotto-agent-desktop"
+
+# Orchestrates turning lotto-agent (Symfony 8.2 / PHP 8.5 CLI & TUI) into a cross-platform
+# Tauri v2 desktop app with a PHP 8.5 sidecar and automated GitHub Releases.
+#
+# Prerequisites:
+#   1. Commit or stash your working tree, and add `.indaba/` to .gitignore.
+#   2. Validate & inspect the DAG:
+#        npx indaba@next validate workflow.ai.yml
+#        npx indaba@next plan workflow.ai.yml
+#   3. Run:
+#        npx indaba@next run workflow.ai.yml
+#   4. Inspect & merge the resulting branch:
+#        git merge indaba/desktop-app
+
+roles:
+  architect:
+    runner: ["acp", "claude-code"]
+    agent: "claude"
+  implementer:
+    runner: ["acp", "claude-code"]
+    agent: "claude"
+  tester:
+    runner: ["acp", "claude-code"]
+    agent: "claude"
+  reviewer:
+    runner: ["acp", "claude-code"]
+    agent: "claude"
+
+steps:
+  # ---- 1. Architecture & Desktop Specification -----------------------------------------------------------------
+  - id: "spec"
+    role: "architect"
+    isolation: "git_worktree"
+    permissions:
+      level: edit
+      fs:
+        write: ["docs/desktop-spec.md"]
+    goal: >-
+      Inspect composer.json, config/, src/Service/, src/Command/, and .github/workflows/ci.yml, then write
+      docs/desktop-spec.md specifying how to wrap lotto-agent as a Tauri v2 desktop application without rewriting
+      the PHP 8.5 / Symfony 8.2 core. Cover:
+      (1) Symfony JSON HTTP bridge in src/Controller/ (endpoints for GameRegistryService, BetPipelineService,
+      StatisticalOptimizerService, DrawHistoryProvider, DrawArchiveService, ReActAgentService, and LlmClientResolver
+      status/provider selection);
+      (2) Desktop runtime & storage: running a local PHP built-in server or CLI JSON bridge on 127.0.0.1:<ephemeral-port>
+      with a per-launch bearer token, and storing user API keys (.env) and mutable draw cache (data/draws/) in the OS
+      app-data directory rather than the read-only bundle directory;
+      (3) Tauri v2 shell in desktop/ (Vite + TypeScript frontend, Rust sidecar launching bundled static-php-cli PHP 8.5
+      with ctype, iconv, zip, curl, openssl, mbstring);
+      (4) GitHub Releases CI (.github/workflows/release.yml) building Windows, macOS, and Linux installers on v* tags.
+      Do not run commands. End your reply with:
+      BOARD result: <one sentence summarizing the desktop architecture>
+    outputs: ["docs/desktop-spec.md"]
+    board:
+      post: [result]
+
+  - id: "checkpoint_spec"
+    depends_on: ["spec"]
+    runner: "shell"
+    commands:
+      - "git add -A"
+      - "git commit -q --allow-empty -m \"desktop: add architecture spec\""
+      - "git branch -f indaba/desktop-app HEAD"
+
+  - id: "spec_review"
+    depends_on: ["checkpoint_spec"]
+    role: "reviewer"
+    consensus_with: ["architect"]
+    decision_type: "consensus"
+    arbiter: "human"
+    isolation: "git_worktree"
+    permissions:
+      level: read
+    input_artifacts: ["docs/desktop-spec.md"]
+    goal: >-
+      Review docs/desktop-spec.md against composer.json, src/Service/, and .github/workflows/ci.yml.
+      Check for: missing PHP extensions required by Symfony/HttpClient, security issues on localhost (auth token,
+      CORS, API key handling), read-only bundle paths on Windows/macOS/Linux, and breaking changes to existing CLI/TUI
+      commands. Do not modify any file and do not run commands. Keep your reply under 200 words.
+      AGREEMENT: means you accept the other participant's findings. CRITIQUE: means a finding is missing, wrong, or
+      unclear. In your first reply list up to five findings and begin with CRITIQUE:.
+
+  # ---- 2. Symfony JSON API Bridge & PHPUnit Tests --------------------------------------------------------------
+  - id: "php_bridge"
+    depends_on: ["spec_review"]
+    role: "implementer"
+    isolation: "git_worktree"
+    permissions:
+      level: edit
+      fs:
+        write: ["src/Controller/**", "config/**", "tests/**"]
+    input_artifacts: ["docs/desktop-spec.md"]
+    board:
+      read:
+        steps: ["spec_review"]
+        kinds: [result]
+      post: [result]
+    goal: >-
+      Implement the Symfony JSON HTTP controllers in src/Controller/ (and any required routing/config in config/)
+      according to docs/desktop-spec.md, reusing existing services in src/Service/ without altering existing CLI/TUI
+      command behavior. Enforce local bearer-token auth when LOTTO_DESKTOP_TOKEN is set, validate inputs with explicit
+      400 JSON errors, and add PHPUnit tests in tests/ covering controller responses, validation, and token checks.
+      Do not run commands. End your reply with:
+      BOARD result: <one sentence summarizing controllers and tests added>
+
+  - id: "verify_php"
+    depends_on: ["php_bridge"]
+    runner: "shell"
+    isolation: "git_worktree"
+    commands:
+      - "php bin/console lint:yaml config"
+      - "php bin/console lint:container"
+      - "vendor/bin/phpunit tests/Unit/Service"
+      - "vendor/bin/phpunit tests/Unit/Mutation/MutationTestingSuiteTest.php"
+
+  - id: "checkpoint_php"
+    depends_on: ["verify_php"]
+    runner: "shell"
+    commands:
+      - "git add -A"
+      - "git commit -q --allow-empty -m \"desktop: add Symfony JSON API bridge and tests\""
+      - "git branch -f indaba/desktop-app HEAD"
+
+  # ---- 3. Tauri v2 Desktop Shell & Frontend UI -----------------------------------------------------------------
+  - id: "desktop_ui"
+    depends_on: ["checkpoint_php"]
+    role: "implementer"
+    isolation: "git_worktree"
+    permissions:
+      level: edit
+      fs:
+        write: ["desktop/**", ".gitignore"]
+    input_artifacts: ["docs/desktop-spec.md"]
+    board:
+      read:
+        steps: ["php_bridge"]
+        kinds: [result]
+      post: [result]
+    goal: >-
+      Scaffold the Tauri v2 desktop application under desktop/ following docs/desktop-spec.md:
+      - desktop/package.json & Vite + TypeScript UI (desktop/src/) with views for:
+        (1) Mathematical Generator & Statistical Optimizer (game/pool/bets selection, Gaussian & coverage charts),
+        (2) AI ReAct Agent chat & strategic commentary,
+        (3) Draw Archive & Settings (API keys stored in OS app-data dir).
+      - desktop/src-tauri/ (Cargo.toml, tauri.conf.json, src/main.rs / lib.rs) configured to launch the bundled
+        PHP 8.5 sidecar binary on 127.0.0.1:<ephemeral-port> with LOTTO_DESKTOP_TOKEN and app-data env paths, and kill
+        the child process cleanly on window close.
+      - Update .gitignore with .indaba/, desktop/node_modules/, desktop/src-tauri/target/, and
+        desktop/src-tauri/binaries/.
+      Do not run commands. End your reply with:
+      BOARD result: <one sentence summarizing the Tauri shell and UI>
+
+  - id: "checkpoint_ui"
+    depends_on: ["desktop_ui"]
+    runner: "shell"
+    commands:
+      - "git add -A"
+      - "git commit -q --allow-empty -m \"desktop: scaffold Tauri v2 shell and frontend UI\""
+      - "git branch -f indaba/desktop-app HEAD"
+
+  # ---- 4. GitHub Release Pipeline & Docs -----------------------------------------------------------------------
+  - id: "release_workflow"
+    depends_on: ["checkpoint_ui"]
+    role: "implementer"
+    isolation: "git_worktree"
+    permissions:
+      level: edit
+      fs:
+        write: [".github/workflows/release.yml", "docs/desktop-release.md"]
+    input_artifacts: ["docs/desktop-spec.md"]
+    goal: >-
+      Create .github/workflows/release.yml triggered on version tags (v*) to build and publish GitHub Releases for
+      windows-latest, macos-latest, and ubuntu-latest using tauri-apps/tauri-action. Include steps to install PHP
+      dependencies (composer install --no-dev --optimize-autoloader), fetch/place static-php-cli PHP 8.5 sidecar
+      binaries into desktop/src-tauri/binaries/ with Tauri target-triple naming, and attach the resulting installers
+      to a draft/published GitHub Release. Write docs/desktop-release.md documenting local dev setup and how to cut a
+      release tag. Do not run commands. End your reply with:
+      BOARD result: <one sentence summarizing the release workflow>
+    board:
+      post: [result]
+
+  - id: "checkpoint_release"
+    depends_on: ["release_workflow"]
+    runner: "shell"
+    commands:
+      - "git add -A"
+      - "git commit -q --allow-empty -m \"desktop: add GitHub Release workflow and docs\""
+      - "git branch -f indaba/desktop-app HEAD"
+
+  # ---- 5. Final Cross-Examination Review -----------------------------------------------------------------------
+  - id: "final_review"
+    depends_on: ["checkpoint_release"]
+    role: "reviewer"
+    consensus_with: ["tester"]
+    decision_type: "consensus"
+    arbiter: "human"
+    isolation: "git_worktree"
+    permissions:
+      level: read
+    input_artifacts: ["docs/desktop-spec.md"]
+    goal: >-
+      Review the implementation (src/Controller/, tests/, desktop/, .github/workflows/release.yml) against
+      docs/desktop-spec.md. Flag any security issues, missing error handling, sidecar path bugs, or release workflow
+      gaps. Do not modify any file and do not run commands. Keep your reply under 200 words.
+      AGREEMENT: means you accept the other participant's findings. CRITIQUE: means a finding is missing, wrong, or
+      unclear. In your first reply list up to five findings and begin with CRITIQUE:.

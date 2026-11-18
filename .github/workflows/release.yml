@@ -1,0 +1,271 @@
+name: Desktop Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Semver bump type (ignored if explicit version is provided)'
+        type: choice
+        required: true
+        default: 'patch'
+        options:
+          - patch
+          - minor
+          - major
+      version:
+        description: 'Explicit version (e.g. 1.2.0 or v1.2.0). Overrides bump type.'
+        type: string
+        required: false
+        default: ''
+      draft:
+        description: 'Create GitHub Release as a draft'
+        type: boolean
+        required: true
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    name: Resolve & Bump App Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag_name: ${{ steps.version.outputs.tag_name }}
+      draft: ${{ steps.version.outputs.draft }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Resolve and bump version
+        id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_BUMP: ${{ inputs.bump }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_DRAFT: ${{ inputs.draft }}
+        run: |
+          node -e '
+            const fs = require("fs");
+
+            const eventName = process.env.EVENT_NAME;
+            let version = "";
+            let tagName = "";
+
+            if (eventName === "push") {
+              tagName = process.env.REF_NAME;
+              version = tagName.replace(/^v/, "");
+            } else {
+              const explicit = (process.env.INPUT_VERSION || "").trim().replace(/^v/, "");
+              if (explicit) {
+                version = explicit;
+              } else {
+                const tauriConf = JSON.parse(fs.readFileSync("desktop/src-tauri/tauri.conf.json", "utf8"));
+                const [maj, min, pat] = tauriConf.version.split("-")[0].split(".").map(Number);
+                const bump = process.env.INPUT_BUMP || "patch";
+                if (bump === "major") version = `${maj + 1}.0.0`;
+                else if (bump === "minor") version = `${maj}.${min + 1}.0`;
+                else version = `${maj}.${min}.${pat + 1}`;
+              }
+              tagName = `v${version}`;
+            }
+
+            if (!/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(version)) {
+              throw new Error(`Invalid semver version: "${version}"`);
+            }
+
+            const pkgPath = "desktop/package.json";
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+            pkg.version = version;
+            fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
+
+            const confPath = "desktop/src-tauri/tauri.conf.json";
+            const conf = JSON.parse(fs.readFileSync(confPath, "utf8"));
+            conf.version = version;
+            fs.writeFileSync(confPath, JSON.stringify(conf, null, 2) + "\n");
+
+            const cargoPath = "desktop/src-tauri/Cargo.toml";
+            const cargo = fs.readFileSync(cargoPath, "utf8");
+            const updatedCargo = cargo.replace(/^version\s*=\s*"[^"]*"/m, `version = "${version}"`);
+            fs.writeFileSync(cargoPath, updatedCargo);
+
+            const draft = eventName === "workflow_dispatch" ? (process.env.INPUT_DRAFT || "true") : "true";
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\ntag_name=${tagName}\ndraft=${draft}\n`);
+            console.log(`Resolved version=${version}, tag_name=${tagName}, draft=${draft}`);
+          '
+
+      - name: Commit bumped version and push tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG_NAME: ${{ steps.version.outputs.tag_name }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet; then
+            git add desktop/package.json desktop/src-tauri/tauri.conf.json desktop/src-tauri/Cargo.toml
+            git commit -m "chore(desktop): release ${TAG_NAME}"
+            git push origin HEAD:${{ github.ref_name }}
+          fi
+          if git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
+            echo "Tag ${TAG_NAME} already exists"
+            exit 1
+          fi
+          git tag "$TAG_NAME"
+          git push origin "$TAG_NAME"
+
+  release-desktop:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+            spc_url: https://dl.static-php.dev/static-php-cli/common/php-8.5.0-cli-linux-x86_64.tar.gz
+            sidecar_name: php-x86_64-unknown-linux-gnu
+          - os: macos-latest
+            rust_target: aarch64-apple-darwin
+            spc_url: https://dl.static-php.dev/static-php-cli/common/php-8.5.0-cli-macos-aarch64.tar.gz
+            sidecar_name: php-aarch64-apple-darwin
+          - os: macos-latest
+            rust_target: x86_64-apple-darwin
+            spc_url: https://dl.static-php.dev/static-php-cli/common/php-8.5.0-cli-macos-x86_64.tar.gz
+            sidecar_name: php-x86_64-apple-darwin
+          - os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            spc_url: https://windows.php.net/downloads/releases/archives/php-8.5.0-nts-Win32-vs17-x64.zip
+            sidecar_name: php-x86_64-pc-windows-msvc.exe
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag_name }}
+
+      - name: Setup PHP 8.5
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.5'
+          extensions: ctype, iconv, zip, curl, openssl, mbstring
+          coverage: none
+
+      - name: Install production Composer dependencies
+        run: composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Linux Tauri system dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Prepare bundled PHP 8.5 sidecar binary (Linux & macOS static-php-cli)
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: |
+          mkdir -p desktop/src-tauri/binaries
+          curl -fsSL "${{ matrix.spc_url }}" -o /tmp/spc-php.tar.gz
+          tar -xzf /tmp/spc-php.tar.gz -C /tmp
+          cp /tmp/php "desktop/src-tauri/binaries/${{ matrix.sidecar_name }}"
+          chmod +x "desktop/src-tauri/binaries/${{ matrix.sidecar_name }}"
+          rm -f /tmp/spc-php.tar.gz /tmp/php
+          "desktop/src-tauri/binaries/${{ matrix.sidecar_name }}" -v
+          "desktop/src-tauri/binaries/${{ matrix.sidecar_name }}" -m
+          node -e '
+            const fs = require("fs");
+            const confPath = "desktop/src-tauri/tauri.conf.json";
+            const conf = JSON.parse(fs.readFileSync(confPath, "utf8"));
+            conf.bundle.externalBin = ["binaries/php"];
+            fs.writeFileSync(confPath, JSON.stringify(conf, null, 2) + "\n");
+          '
+
+      - name: Prepare bundled PHP 8.5 sidecar binary & runtime DLLs (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          mkdir -p desktop/src-tauri/binaries desktop/src-tauri/php-runtime/ext
+          PHP_DIR="$(dirname "$(command -v php)")"
+          cp "$PHP_DIR/php.exe" "desktop/src-tauri/binaries/${{ matrix.sidecar_name }}"
+          cp "$PHP_DIR"/*.dll desktop/src-tauri/php-runtime/
+          for ext in php_curl.dll php_openssl.dll php_mbstring.dll php_zip.dll; do
+            if [ -f "$PHP_DIR/ext/$ext" ]; then
+              cp "$PHP_DIR/ext/$ext" desktop/src-tauri/php-runtime/ext/
+            fi
+          done
+          printf 'extension_dir = "ext"\nextension=curl\nextension=mbstring\nextension=openssl\nextension=zip\n' > desktop/src-tauri/php-runtime/php.ini
+          node -e '
+            const fs = require("fs");
+            const confPath = "desktop/src-tauri/tauri.conf.json";
+            const conf = JSON.parse(fs.readFileSync(confPath, "utf8"));
+            conf.bundle.externalBin = ["binaries/php"];
+            conf.bundle.resources["php-runtime/*.dll"] = "./";
+            conf.bundle.resources["php-runtime/php.ini"] = "./";
+            conf.bundle.resources["php-runtime/ext/*.dll"] = "ext/";
+            fs.writeFileSync(confPath, JSON.stringify(conf, null, 2) + "\n");
+          '
+
+      - name: Sync app version to build files
+        shell: bash
+        env:
+          APP_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const version = process.env.APP_VERSION;
+
+            const pkgPath = "desktop/package.json";
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+            pkg.version = version;
+            fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
+
+            const confPath = "desktop/src-tauri/tauri.conf.json";
+            const conf = JSON.parse(fs.readFileSync(confPath, "utf8"));
+            conf.version = version;
+            fs.writeFileSync(confPath, JSON.stringify(conf, null, 2) + "\n");
+
+            const cargoPath = "desktop/src-tauri/Cargo.toml";
+            const cargo = fs.readFileSync(cargoPath, "utf8");
+            fs.writeFileSync(cargoPath, cargo.replace(/^version\s*=\s*"[^"]*"/m, `version = "${version}"`));
+          '
+
+      - name: Install frontend dependencies
+        working-directory: ./desktop
+        run: npm install
+
+      - name: Build and publish Tauri v2 bundles
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: ./desktop
+          tagName: ${{ needs.prepare.outputs.tag_name }}
+          releaseName: 'Lotto Agent Desktop ${{ needs.prepare.outputs.tag_name }}'
+          releaseBody: 'Automated cross-platform desktop build (Windows, macOS, Linux) bundling Lotto Agent Symfony 8.2 + PHP 8.5 sidecar.'
+          releaseDraft: ${{ needs.prepare.outputs.draft == 'true' }}
+          prerelease: false
+          args: --target ${{ matrix.rust_target }}
