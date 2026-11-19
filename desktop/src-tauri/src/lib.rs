@@ -221,19 +221,35 @@ fn generate_bearer_token() -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
+fn strip_windows_verbatim_prefix(path: PathBuf) -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        let s = path.to_string_lossy();
+        if let Some(stripped) = s.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{}", stripped));
+        }
+        if let Some(stripped) = s.strip_prefix(r"\\?\") {
+            return PathBuf::from(stripped);
+        }
+    }
+    path
+}
+
 fn resolve_php_app_dir(app: &AppHandle) -> PathBuf {
     if let Ok(res_dir) = app.path().resource_dir() {
-        let bundled = res_dir.join("php-app");
+        let bundled = strip_windows_verbatim_prefix(res_dir).join("php-app");
         if bundled.join("public").join("index.php").exists() {
             return bundled;
         }
     }
 
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("../.."))
+    strip_windows_verbatim_prefix(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("../..")),
+    )
 }
 
 fn resolve_php_binary(app: &AppHandle) -> (PathBuf, String) {
@@ -245,7 +261,7 @@ fn resolve_php_binary(app: &AppHandle) -> (PathBuf, String) {
 
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
-            let candidate = exe_dir.join(bin_name);
+            let candidate = strip_windows_verbatim_prefix(exe_dir.join(bin_name));
             if candidate.exists() {
                 return (candidate, "bundled_exe_dir".to_string());
             }
@@ -253,7 +269,9 @@ fn resolve_php_binary(app: &AppHandle) -> (PathBuf, String) {
     }
 
     if let Ok(res_dir) = app.path().resource_dir() {
-        let candidate = res_dir.join("binaries").join(bin_name);
+        let candidate = strip_windows_verbatim_prefix(res_dir)
+            .join("binaries")
+            .join(bin_name);
         if candidate.exists() {
             return (candidate, "bundled_resource_dir".to_string());
         }
@@ -375,10 +393,12 @@ fn probe_http_health(addr: &str, token: &str) -> HttpHealth {
                 addr, auth_header
             );
             if stream.write_all(req.as_bytes()).is_ok() {
-                let mut buf = [0u8; 512];
+                let mut buf = [0u8; 2048];
                 if let Ok(n) = stream.read(&mut buf) {
                     let head = String::from_utf8_lossy(&buf[..n]);
-                    if head.contains("200 OK") {
+                    if head.contains("200 OK")
+                        && (head.contains("application/json") || head.contains("\"status\""))
+                    {
                         return HttpHealth::Ok;
                     }
                     if head.contains("401") {
@@ -426,10 +446,11 @@ fn spawn_php_sidecar(
 ) -> Option<Child> {
     let php_app_dir = resolve_php_app_dir(app);
     let (php_bin, php_source) = resolve_php_binary(app);
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .unwrap_or_else(|_| php_app_dir.join("var").join("desktop-appdata"));
+    let app_data_dir = strip_windows_verbatim_prefix(
+        app.path()
+            .app_data_dir()
+            .unwrap_or_else(|_| php_app_dir.join("var").join("desktop-appdata")),
+    );
 
     if let Ok(mut d) = diag_arc.lock() {
         d.php_path = Some(php_bin.display().to_string());
