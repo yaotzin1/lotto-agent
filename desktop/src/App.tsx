@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import {
   Alert,
   AppBar,
@@ -31,6 +32,7 @@ import {
   type GameConfig,
   type GenerateResponse,
   type SettingsResponse,
+  type SidecarDiagnostics,
   type StatsResponse,
 } from './api';
 import { translations, type Lang } from './i18n';
@@ -181,8 +183,11 @@ export function App() {
     } catch (err: any) {
       setBackendHealthy(false);
       const diag = await getSidecarDiagnostics();
+      if (diag?.state === 'starting' && !diag.error) {
+        return;
+      }
       const detail = diag?.error ? formatSidecarDiagnostics(diag) : err?.message || String(err);
-      if (!silent) {
+      if (!silent || diag?.error) {
         setError(translations[lang].sidecarConnectionError(detail));
       }
     }
@@ -193,9 +198,36 @@ export function App() {
   }, [connectBackend]);
 
   useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<SidecarDiagnostics>('sidecar-status', (event) => {
+      const diag = event.payload;
+      if (diag.state === 'ready') {
+        connectBackend(false);
+      } else if (diag.state === 'failed' || diag.state === 'exited') {
+        setBackendHealthy(false);
+        setError(translations[lang].sidecarConnectionError(formatSidecarDiagnostics(diag)));
+      }
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => {
+        // Running outside Tauri shell (e.g. Vite browser preview)
+      });
+
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [connectBackend, lang]);
+
+  useEffect(() => {
     if (backendHealthy) return;
     const timer = window.setInterval(async () => {
-      await retrySidecar();
+      const diag = await getSidecarDiagnostics();
+      if (diag?.state === 'failed' || diag?.state === 'exited') {
+        await retrySidecar();
+        return;
+      }
       await connectBackend(true);
     }, 3000);
     return () => window.clearInterval(timer);

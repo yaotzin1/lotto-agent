@@ -183,6 +183,14 @@ fn retry_sidecar(app: AppHandle, state: State<'_, SidecarState>) -> SidecarDiagn
             cfg.base_url = u.clone();
             cfg.token = t.clone();
         }
+        if let Ok(mut d) = state.diagnostics.lock() {
+            d.state = SidecarRunState::Starting;
+            d.error = None;
+            d.exit_code = None;
+            d.signal = None;
+            d.base_url = u.clone();
+            d.checked_at = now_unix_secs();
+        }
         (p, t, u)
     };
 
@@ -466,6 +474,10 @@ fn spawn_php_sidecar(
         if dir.join("php.ini").exists() {
             cmd.arg("-c").arg(dir.join("php.ini"));
             cmd.env("PHPRC", dir);
+        }
+        let ext_dir = dir.join("ext");
+        if ext_dir.exists() {
+            cmd.arg("-d").arg(format!("extension_dir={}", ext_dir.display()));
         }
     }
 

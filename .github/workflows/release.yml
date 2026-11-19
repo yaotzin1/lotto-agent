@@ -275,7 +275,10 @@ jobs:
           projectPath: ./desktop
           tagName: ${{ needs.prepare.outputs.tag_name }}
           releaseName: 'Lotto Agent Desktop ${{ needs.prepare.outputs.tag_name }}'
-          releaseBody: 'Automated cross-platform desktop build (Windows, macOS, Linux) bundling Lotto Agent Symfony 8.2 + PHP 8.5 sidecar.'
+          releaseBody: |
+            Automated cross-platform desktop build (Windows, macOS, Linux) bundling Lotto Agent Symfony 8.2 + PHP 8.5 sidecar.
+
+            > **Windows SmartScreen note:** The Windows installer is currently unsigned. If Windows Defender SmartScreen appears, click **More info** (*Więcej informacji*) → **Run anyway** (*Uruchom mimo to*).
           releaseDraft: ${{ needs.prepare.outputs.draft == 'true' }}
           prerelease: false
           args: --target ${{ matrix.rust_target }}

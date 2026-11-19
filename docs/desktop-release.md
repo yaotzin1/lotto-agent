@@ -80,3 +80,5 @@ The workflow builds installers for:
 - **Windows**: `.msi` / NSIS `.exe` (`x86_64-pc-windows-msvc`)
 - **macOS**: `.dmg` / `.app` (`aarch64-apple-darwin` and `x86_64-apple-darwin`)
 - **Linux**: `.deb` / `.AppImage` (`x86_64-unknown-linux-gnu`)
+
+> **Windows SmartScreen Note:** Releases are currently unsigned. When running the Windows installer for the first time, click **More info** (*Więcej informacji*) → **Run anyway** (*Uruchom mimo to*).
